@@ -1,0 +1,53 @@
+name = "e-commaxxing"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat_v2"]
+
+# ─── D1 Database ─────────────────────────────────────────────────────────────
+# This is filled in automatically by `npm run setup`, or manually after running:
+#   wrangler d1 create ecommaxxing-db
+[[d1_databases]]
+binding = "DB"
+database_name = "ecommaxxing-db"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+# ─── Public Variables (non-sensitive) ────────────────────────────────────────
+[vars]
+# Which database adapter to use: "d1" or "mongodb"
+DB_ADAPTER = "d1"
+
+# MongoDB database name (only if DB_ADAPTER = "mongodb")
+MONGODB_DB_NAME = "ecommaxxing"
+
+# CORS: comma-separated list of allowed origins, or "*" for all
+# Example: "https://myshop.com,https://www.myshop.com"
+CORS_ORIGINS = "*"
+
+# Allowed HTTP methods for CORS
+CORS_METHODS = "GET,POST,PUT,DELETE,OPTIONS"
+
+# CSRF origin check: "true" or "false"
+# When enabled, non-GET requests must have an Origin header matching CORS_ORIGINS
+# Disable this if you're calling the API from server-side code or mobile apps
+CSRF_ENABLED = "false"
+
+# Public Stripe key (used in checkout responses so the frontend can init Stripe.js)
+# This is NOT secret — it's safe to put here
+STRIPE_PUBLISHABLE_KEY = "pk_test_REPLACE_ME"
+
+# Default currency for new products (ISO 4217 lowercase, e.g. "usd", "eur", "gbp")
+DEFAULT_CURRENCY = "usd"
+
+# ─── Local Development ────────────────────────────────────────────────────────
+# For secrets during local dev, create a `.dev.vars` file (see .dev.vars.example)
+# DO NOT put secrets in this file — use `wrangler secret put` for production
+
+# ─── Secrets (set via `wrangler secret put <NAME>`) ──────────────────────────
+# The following secrets must be set before deploying:
+#
+#   wrangler secret put STRIPE_SECRET_KEY
+#   wrangler secret put STRIPE_WEBHOOK_SECRET
+#   wrangler secret put ADMIN_API_KEY
+#   wrangler secret put MONGODB_URI   (only if DB_ADAPTER = "mongodb")
+#
+# `npm run setup` handles all of this interactively.

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.wrangler/
+
+# Local dev secrets — NEVER commit this file
+.dev.vars
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,27 @@
+{
+  "name": "e-commaxxing",
+  "version": "1.0.0",
+  "description": "Serverless e-commerce backend on Cloudflare Workers",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate": "wrangler d1 migrations apply ecommaxxing-db",
+    "db:migrate:local": "wrangler d1 migrations apply ecommaxxing-db --local",
+    "db:studio": "wrangler d1 studio ecommaxxing-db",
+    "setup": "node setup.mjs",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hono/zod-validator": "^0.4.0",
+    "hono": "^4.6.0",
+    "mongodb": "^6.10.0",
+    "stripe": "^17.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241127.0",
+    "typescript": "^5.6.0",
+    "wrangler": "^3.90.0"
+  }
+}

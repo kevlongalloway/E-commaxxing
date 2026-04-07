@@ -1,0 +1,11 @@
+# Copy this file to `.dev.vars` for local development secrets.
+# This file is safe to commit. `.dev.vars` is gitignored.
+#
+# Wrangler automatically loads `.dev.vars` when running `wrangler dev`.
+
+STRIPE_SECRET_KEY=sk_test_YOUR_TEST_KEY_HERE
+STRIPE_WEBHOOK_SECRET=whsec_YOUR_WEBHOOK_SECRET_HERE
+ADMIN_API_KEY=your-local-dev-admin-key
+
+# Only needed if DB_ADAPTER = "mongodb"
+# MONGODB_URI=mongodb+srv://user:pass@cluster.mongodb.net/
