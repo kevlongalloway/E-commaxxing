@@ -7,6 +7,7 @@ import { csrfMiddleware } from "./middleware/csrf.js";
 import { adminAuthMiddleware } from "./middleware/auth.js";
 import { products } from "./routes/products.js";
 import { admin } from "./routes/admin.js";
+import { auth } from "./routes/auth.js";
 import { checkout } from "./routes/checkout.js";
 import { webhooks } from "./routes/webhooks.js";
 
@@ -41,6 +42,9 @@ app.get("/", (c) =>
 app.get("/health", (c) => c.json({ ok: true, data: { status: "healthy" } }));
 
 // ─── Public Routes ────────────────────────────────────────────────────────────
+
+// Admin authentication (login → JWT). No auth middleware on this route.
+app.route("/auth", auth);
 
 // Product catalog (read-only, publicly accessible)
 app.route("/products", products);

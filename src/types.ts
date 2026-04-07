@@ -8,6 +8,9 @@ export type Bindings = {
   STRIPE_SECRET_KEY: string;
   STRIPE_WEBHOOK_SECRET: string;
   ADMIN_API_KEY: string;
+  ADMIN_USERNAME: string;  // admin login username for JWT-based auth
+  ADMIN_PASSWORD: string;  // admin login password for JWT-based auth
+  JWT_SECRET: string;      // secret key used to sign/verify JWTs (min 32 chars)
   MONGODB_URI: string; // only required when DB_ADAPTER = "mongodb"
 
   // ── Public vars (set in wrangler.toml [vars]) ──

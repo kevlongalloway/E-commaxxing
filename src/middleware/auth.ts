@@ -1,14 +1,18 @@
 import type { MiddlewareHandler } from "hono";
 import type { Bindings } from "../types.js";
+import { verifyJWT } from "../lib/jwt.js";
 
 /**
- * Admin API key authentication middleware.
+ * Admin authentication middleware.
  *
- * Expects the request to include:
- *   Authorization: Bearer <ADMIN_API_KEY>
+ * Accepts two token types in the `Authorization: Bearer <token>` header:
  *
- * Set the key via:
- *   wrangler secret put ADMIN_API_KEY
+ *   1. Static API key  — set via `wrangler secret put ADMIN_API_KEY`.
+ *      Used for server-to-server integrations or CI scripts.
+ *
+ *   2. JWT             — issued by `POST /auth/login`.
+ *      Used by the admin frontend after a username/password login.
+ *      Verified with `JWT_SECRET` (set via `wrangler secret put JWT_SECRET`).
  *
  * Apply this middleware only to admin routes (see src/index.ts).
  */
@@ -19,7 +23,6 @@ export const adminAuthMiddleware = (): MiddlewareHandler<{
     const adminKey = c.env.ADMIN_API_KEY;
 
     if (!adminKey) {
-      // Misconfiguration — fail closed.
       return c.json(
         { ok: false, error: "Server misconfiguration: ADMIN_API_KEY not set" },
         500
@@ -31,21 +34,33 @@ export const adminAuthMiddleware = (): MiddlewareHandler<{
 
     if (scheme !== "Bearer" || !token) {
       return c.json(
-        { ok: false, error: "Unauthorized: missing or malformed Authorization header" },
+        {
+          ok: false,
+          error: "Unauthorized: missing or malformed Authorization header",
+        },
         401
       );
     }
 
-    // Constant-time comparison to prevent timing attacks.
-    if (!timingSafeEqual(token, adminKey)) {
-      return c.json({ ok: false, error: "Unauthorized: invalid API key" }, 401);
+    // 1. Check static API key (constant-time).
+    if (timingSafeEqual(token, adminKey)) {
+      return next();
     }
 
-    await next();
+    // 2. Try to verify as a JWT (requires JWT_SECRET to be configured).
+    const jwtSecret = c.env.JWT_SECRET;
+    if (jwtSecret) {
+      const payload = await verifyJWT(token, jwtSecret);
+      if (payload !== null) {
+        return next();
+      }
+    }
+
+    return c.json({ ok: false, error: "Unauthorized: invalid token" }, 401);
   };
 };
 
-/** Simple constant-time string comparison (no external dependency needed). */
+/** Simple constant-time string comparison to prevent timing attacks. */
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) {
     // Still iterate to avoid early-exit timing leak.

@@ -7,45 +7,104 @@
 
 ## Authentication
 
-Every request to `/admin/*` must include the API key as a Bearer token:
+The API supports two authentication methods. Use **JWT login** for admin
+frontends (browsers, SPAs). Use the **static API key** for server-to-server
+integrations or CI scripts.
+
+Both methods use the same `Authorization: Bearer <token>` header on every
+`/admin/*` request.
+
+---
+
+### Method 1 — JWT Login (recommended for frontends)
+
+#### Step 1 — Log in and get a token
 
 ```
-Authorization: Bearer <ADMIN_API_KEY>
+POST /auth/login
 ```
 
-The key is set by the backend operator during setup (`wrangler secret put ADMIN_API_KEY`).
+**Request body**
 
-**Store the key securely.** Do not expose it in client-side JavaScript, commit it
-to source control, or log it. The recommended pattern is to keep it in an
-environment variable on your portal server and proxy requests server-side, or
-store it in a secure secrets manager.
+```json
+{ "username": "admin", "password": "your-admin-password" }
+```
 
-### Auth error responses
+**Success response** — `200 OK`
+
+```json
+{
+  "ok": true,
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "expiresIn": 28800
+  }
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `token` | string | Signed JWT (HMAC-SHA256). Valid for `expiresIn` seconds. |
+| `expiresIn` | integer | Token lifetime in seconds (`28800` = 8 hours). |
+
+**Error responses**
 
 | HTTP | `error` | What happened |
 |---|---|---|
-| `401` | `"Unauthorized: missing or malformed Authorization header"` | Header is absent or not in `Bearer <token>` format |
-| `401` | `"Unauthorized: invalid API key"` | Wrong key |
-| `500` | `"Server misconfiguration: ADMIN_API_KEY not set"` | Backend is not configured — contact the backend operator |
+| `401` | `"Invalid credentials"` | Wrong username or password |
+| `422` | `"Validation failed"` | Missing `username` or `password` field |
+| `500` | `"Server misconfiguration: admin credentials not configured"` | `ADMIN_USERNAME`, `ADMIN_PASSWORD`, or `JWT_SECRET` secret is not set |
 
-### How to attach the header
+#### Step 2 — Use the token
+
+Include the token in the `Authorization` header on every admin API call:
+
+```
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+Tokens expire after **8 hours**. When a request returns `401`, call
+`POST /auth/login` again to obtain a fresh token.
+
+#### Example — login flow in JavaScript
 
 ```javascript
-// Recommended: build a single authenticated fetch wrapper
 const API_BASE = 'https://<your-worker>.workers.dev';
 
+// Store the token in memory (or sessionStorage for persistence across tabs).
+// Never store it in localStorage on shared/public machines.
+let authToken = null;
+
+async function login(username, password) {
+  const res  = await fetch(`${API_BASE}/auth/login`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ username, password }),
+  });
+  const body = await res.json();
+  if (!res.ok || !body.ok) throw new Error(body.error ?? 'Login failed');
+  authToken = body.data.token;
+}
+
 async function adminFetch(path, options = {}) {
+  if (!authToken) throw new Error('Not logged in');
+
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.ADMIN_API_KEY}`,
+      'Authorization': `Bearer ${authToken}`,
       ...options.headers,
     },
   });
 
-  const body = await res.json();
+  if (res.status === 401) {
+    // Token expired — redirect to login page or call login() again.
+    authToken = null;
+    throw new AdminApiError('Session expired — please log in again', 401);
+  }
 
+  const body = await res.json();
   if (!res.ok || !body.ok) {
     throw new AdminApiError(body.error ?? 'Unknown error', res.status, body.details);
   }
@@ -56,12 +115,57 @@ async function adminFetch(path, options = {}) {
 class AdminApiError extends Error {
   constructor(message, status, details) {
     super(message);
-    this.name  = 'AdminApiError';
+    this.name    = 'AdminApiError';
     this.status  = status;
-    this.details = details; // present on 422 validation errors
+    this.details = details;
   }
 }
+
+// Usage
+await login('admin', 'your-admin-password');
+const products = await adminFetch('/admin/products');
 ```
+
+#### Backend setup — required secrets
+
+Set these three secrets with Wrangler before deploying:
+
+```bash
+wrangler secret put ADMIN_USERNAME   # e.g. "admin"
+wrangler secret put ADMIN_PASSWORD   # use a strong password
+wrangler secret put JWT_SECRET       # random string, 32+ characters
+```
+
+For local development, add them to your `.dev.vars` file
+(copy `.dev.vars.example` as a starting point).
+
+---
+
+### Method 2 — Static API key (server-to-server)
+
+Every request to `/admin/*` must include the API key as a Bearer token:
+
+```
+Authorization: Bearer <ADMIN_API_KEY>
+```
+
+The key is set by the backend operator during setup
+(`wrangler secret put ADMIN_API_KEY`).
+
+**Store the key securely.** Do not expose it in client-side JavaScript,
+commit it to source control, or log it. Keep it in an environment variable
+on your server and proxy requests server-side, or store it in a secure
+secrets manager.
+
+---
+
+### Auth error responses (all `/admin/*` routes)
+
+| HTTP | `error` | What happened |
+|---|---|---|
+| `401` | `"Unauthorized: missing or malformed Authorization header"` | Header is absent or not `Bearer <token>` |
+| `401` | `"Unauthorized: invalid token"` | Token is not the API key and not a valid JWT |
+| `500` | `"Server misconfiguration: ADMIN_API_KEY not set"` | Backend is not configured — contact the backend operator |
 
 ---
 
@@ -336,7 +440,7 @@ await adminFetch(`/admin/products/${id}`, { method: 'DELETE' });
 |---|---|
 | `200` | OK |
 | `201` | Product created |
-| `401` | Missing or invalid API key |
+| `401` | Missing, invalid, or expired token |
 | `404` | Product not found |
 | `422` | Validation failed — `details` has field-level messages |
 | `500` | Server error (or backend misconfiguration) |
@@ -406,6 +510,7 @@ These are suggestions — build whatever fits your workflow.
 
 | View | API call |
 |---|---|
+| Login page | `POST /auth/login` → store token |
 | Product table | `GET /admin/products` with pagination |
 | Product detail / edit form | `GET /admin/products/:id` → prefill form → `PUT /admin/products/:id` |
 | New product form | Form → `POST /admin/products` |
@@ -417,10 +522,11 @@ These are suggestions — build whatever fits your workflow.
 
 ## Endpoints summary
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/admin/products` | List all products (incl. inactive) |
-| `GET` | `/admin/products/:id` | Get single product |
-| `POST` | `/admin/products` | Create product → `201` |
-| `PUT` | `/admin/products/:id` | Partial update |
-| `DELETE` | `/admin/products/:id` | Hard delete |
+| Method | Path | Auth required | Description |
+|---|---|---|---|
+| `POST` | `/auth/login` | No | Login → returns JWT |
+| `GET` | `/admin/products` | Yes | List all products (incl. inactive) |
+| `GET` | `/admin/products/:id` | Yes | Get single product |
+| `POST` | `/admin/products` | Yes | Create product → `201` |
+| `PUT` | `/admin/products/:id` | Yes | Partial update |
+| `DELETE` | `/admin/products/:id` | Yes | Hard delete |
