@@ -5,24 +5,18 @@ import type {
   CreateProductInput,
   UpdateProductInput,
   ProductQueryOptions,
-  User,
-  UserWithHash,
-  CreateUserInput,
 } from "../types.js";
-import { hashPassword } from "../lib/password.js";
 
 // Lazy-import mongodb to avoid bundling issues when using D1.
 // The `mongodb` package works in Cloudflare Workers with `nodejs_compat_v2`.
 type MongoClientType = import("mongodb").MongoClient;
 type CollectionType = import("mongodb").Collection<MongoProductDoc>;
-type UserCollectionType = import("mongodb").Collection<MongoUserDoc>;
 
 type MongoProductDoc = Omit<Product, "id"> & { _id: string };
-type MongoUserDoc = Omit<UserWithHash, "id"> & { _id: string };
 
 let _client: MongoClientType | null = null;
 
-async function getClient(uri: string): Promise<MongoClientType> {
+async function getCollection(uri: string, dbName: string): Promise<CollectionType> {
   if (!_client) {
     const { MongoClient } = await import("mongodb");
     _client = new MongoClient(uri, {
@@ -31,17 +25,7 @@ async function getClient(uri: string): Promise<MongoClientType> {
     });
     await _client.connect();
   }
-  return _client;
-}
-
-async function getCollection(uri: string, dbName: string): Promise<CollectionType> {
-  const client = await getClient(uri);
-  return client.db(dbName).collection<MongoProductDoc>("products");
-}
-
-async function getUserCollection(uri: string, dbName: string): Promise<UserCollectionType> {
-  const client = await getClient(uri);
-  return client.db(dbName).collection<MongoUserDoc>("users");
+  return _client.db(dbName).collection<MongoProductDoc>("products");
 }
 
 export class MongoDatabase implements Database {
@@ -52,10 +36,6 @@ export class MongoDatabase implements Database {
 
   private async col(): Promise<CollectionType> {
     return getCollection(this.uri, this.dbName);
-  }
-
-  private async userCol(): Promise<UserCollectionType> {
-    return getUserCollection(this.uri, this.dbName);
   }
 
   async getProducts(options: ProductQueryOptions = {}): Promise<Product[]> {
@@ -156,33 +136,6 @@ export class MongoDatabase implements Database {
         },
       }
     );
-  }
-
-  async createUser(input: CreateUserInput): Promise<User> {
-    const col = await this.userCol();
-    const id = randomUUID();
-    const now = new Date().toISOString();
-    const password_hash = await hashPassword(input.password);
-    const email = input.email.toLowerCase();
-
-    await col.insertOne({ _id: id, email, password_hash, created_at: now, updated_at: now });
-    return { id, email, created_at: now, updated_at: now };
-  }
-
-  async getUserByEmail(email: string): Promise<UserWithHash | null> {
-    const col = await this.userCol();
-    const doc = await col.findOne({ email: email.toLowerCase() });
-    if (!doc) return null;
-    const { _id, ...rest } = doc;
-    return { id: _id, ...rest };
-  }
-
-  async getUserById(id: string): Promise<User | null> {
-    const col = await this.userCol();
-    const doc = await col.findOne({ _id: id });
-    if (!doc) return null;
-    const { _id, password_hash: _, ...rest } = doc;
-    return { id: _id, ...rest };
   }
 }
 

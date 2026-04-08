@@ -25,115 +25,6 @@ Never divide by 100 before sending — the API stores what you send.
 
 ---
 
-## Authentication
-
-Users register and log in to get a **JWT token**. Pass it as a Bearer token on
-protected endpoints. Tokens expire after **7 days**.
-
-### Register
-
-```
-POST /auth/register
-```
-
-**Request body**
-```json
-{ "email": "user@example.com", "password": "minEightChars" }
-```
-
-| Field | Required | Constraints |
-|---|---|---|
-| `email` | Yes | Valid email address |
-| `password` | Yes | Min 8 characters |
-
-**Response `data`** — `201 Created`
-```json
-{
-  "token": "eyJhbGci...",
-  "user": { "id": "uuid", "email": "user@example.com", "created_at": "...", "updated_at": "..." }
-}
-```
-
-**Errors**
-
-| HTTP | Meaning |
-|---|---|
-| `409` | Email already registered |
-| `422` | Validation failed (invalid email, password too short) |
-
----
-
-### Login
-
-```
-POST /auth/login
-```
-
-**Request body**
-```json
-{ "email": "user@example.com", "password": "minEightChars" }
-```
-
-**Response `data`**
-```json
-{
-  "token": "eyJhbGci...",
-  "user": { "id": "uuid", "email": "user@example.com", "created_at": "...", "updated_at": "..." }
-}
-```
-
-**Errors**
-
-| HTTP | Meaning |
-|---|---|
-| `401` | Invalid email or password |
-
----
-
-### Get current user
-
-```
-GET /auth/me
-```
-
-Requires `Authorization: Bearer <token>` header.
-
-**Response `data`**
-```json
-{ "user": { "id": "uuid", "email": "user@example.com", "created_at": "...", "updated_at": "..." } }
-```
-
-**Errors**
-
-| HTTP | Meaning |
-|---|---|
-| `401` | Missing, invalid, or expired token |
-| `404` | User no longer exists |
-
----
-
-### Using the token
-
-```javascript
-// Store token after login/register
-localStorage.setItem('token', data.token);
-
-// Attach to authenticated requests
-async function authFetch(path, options = {}) {
-  const token = localStorage.getItem('token');
-  return fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-      ...options.headers,
-    },
-  });
-}
-```
-
----
-
 ## Products
 
 ### List products
@@ -410,9 +301,6 @@ function getPrimaryImage(product, fallback = '/placeholder.png') {
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `POST` | `/auth/register` | — | Create account → JWT token |
-| `POST` | `/auth/login` | — | Login → JWT token |
-| `GET` | `/auth/me` | JWT | Get current user |
 | `GET` | `/products` | — | List active products |
 | `GET` | `/products/:id` | — | Single product |
 | `POST` | `/checkout/session` | — | Stripe hosted checkout → get redirect URL |

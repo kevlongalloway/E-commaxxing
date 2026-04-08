@@ -59,7 +59,6 @@ R2_PUBLIC_URL = "REPLACE_WITH_YOUR_R2_PUBLIC_URL"
 #   wrangler secret put STRIPE_SECRET_KEY
 #   wrangler secret put STRIPE_WEBHOOK_SECRET
 #   wrangler secret put ADMIN_API_KEY
-#   wrangler secret put JWT_SECRET          (use a long random string, e.g. openssl rand -hex 32)
 #   wrangler secret put MONGODB_URI   (only if DB_ADAPTER = "mongodb")
 #
 # `npm run setup` handles all of this interactively.

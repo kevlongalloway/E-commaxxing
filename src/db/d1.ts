@@ -5,11 +5,7 @@ import type {
   CreateProductInput,
   UpdateProductInput,
   ProductQueryOptions,
-  User,
-  UserWithHash,
-  CreateUserInput,
 } from "../types.js";
-import { hashPassword } from "../lib/password.js";
 
 // ─── Row shape coming back from D1 ───────────────────────────────────────────
 type ProductRow = {
@@ -173,39 +169,6 @@ export class D1Database implements Database {
       )
       .bind(stripeProductId, stripePriceId, new Date().toISOString(), id)
       .run();
-  }
-
-  async createUser(input: CreateUserInput): Promise<User> {
-    const id = randomUUID();
-    const now = new Date().toISOString();
-    const password_hash = await hashPassword(input.password);
-
-    await this.db
-      .prepare(
-        "INSERT INTO users (id, email, password_hash, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)"
-      )
-      .bind(id, input.email.toLowerCase(), password_hash, now, now)
-      .run();
-
-    return { id, email: input.email.toLowerCase(), created_at: now, updated_at: now };
-  }
-
-  async getUserByEmail(email: string): Promise<UserWithHash | null> {
-    const row = await this.db
-      .prepare("SELECT * FROM users WHERE email = ?1")
-      .bind(email.toLowerCase())
-      .first<{ id: string; email: string; password_hash: string; created_at: string; updated_at: string }>();
-
-    return row ?? null;
-  }
-
-  async getUserById(id: string): Promise<User | null> {
-    const row = await this.db
-      .prepare("SELECT id, email, created_at, updated_at FROM users WHERE id = ?1")
-      .bind(id)
-      .first<User>();
-
-    return row ?? null;
   }
 }
 
