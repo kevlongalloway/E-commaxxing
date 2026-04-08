@@ -8,7 +8,7 @@ compatibility_flags = ["nodejs_compat_v2"]
 #   wrangler d1 create ecommaxxing-db
 [[d1_databases]]
 binding = "DB"
-database_name = "ecommaxxing-db"
+database_name = "blackstardb"
 database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 
 # ─── Public Variables (non-sensitive) ────────────────────────────────────────
