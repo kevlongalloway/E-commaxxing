@@ -10,7 +10,9 @@ export type Bindings = {
   // ── Secrets (set via `wrangler secret put`) ──
   STRIPE_SECRET_KEY: string;
   STRIPE_WEBHOOK_SECRET: string;
-  ADMIN_API_KEY: string;
+  ADMIN_USERNAME: string;
+  ADMIN_PASSWORD: string;
+  JWT_SECRET: string;
   MONGODB_URI: string; // only required when DB_ADAPTER = "mongodb"
 
   // ── Public vars (set in wrangler.toml [vars]) ──

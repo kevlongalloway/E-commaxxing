@@ -7,6 +7,7 @@ import { csrfMiddleware } from "./middleware/csrf.js";
 import { adminAuthMiddleware } from "./middleware/auth.js";
 import { products } from "./routes/products.js";
 import { admin } from "./routes/admin.js";
+import { adminLogin } from "./routes/adminLogin.js";
 import { checkout } from "./routes/checkout.js";
 import { webhooks } from "./routes/webhooks.js";
 import images from "./routes/images.js";
@@ -52,8 +53,12 @@ app.route("/checkout", checkout);
 // Stripe webhooks (verified by signature, no auth middleware needed)
 app.route("/webhooks", webhooks);
 
-// ─── Admin Routes (protected by API key) ─────────────────────────────────────
+// ─── Admin Routes ─────────────────────────────────────────────────────────────
 
+// Login is public — must be registered before the auth middleware.
+app.route("/admin/login", adminLogin);
+
+// Everything else under /admin/* requires a valid JWT.
 app.use("/admin/*", adminAuthMiddleware());
 app.route("/admin", admin);
 app.route("/admin/images", images);

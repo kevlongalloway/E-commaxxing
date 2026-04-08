@@ -1,27 +1,22 @@
 import type { MiddlewareHandler } from "hono";
+import { verify } from "hono/jwt";
 import type { Bindings } from "../types.js";
 
 /**
- * Admin API key authentication middleware.
+ * Admin JWT authentication middleware.
  *
- * Expects the request to include:
- *   Authorization: Bearer <ADMIN_API_KEY>
+ * Expects: Authorization: Bearer <token>
  *
- * Set the key via:
- *   wrangler secret put ADMIN_API_KEY
- *
- * Apply this middleware only to admin routes (see src/index.ts).
+ * Token is obtained by calling POST /admin/login with ADMIN_USERNAME + ADMIN_PASSWORD.
+ * Token is signed with JWT_SECRET (set via `wrangler secret put JWT_SECRET`).
  */
 export const adminAuthMiddleware = (): MiddlewareHandler<{
   Bindings: Bindings;
 }> => {
   return async (c, next) => {
-    const adminKey = c.env.ADMIN_API_KEY;
-
-    if (!adminKey) {
-      // Misconfiguration — fail closed.
+    if (!c.env.JWT_SECRET) {
       return c.json(
-        { ok: false, error: "Server misconfiguration: ADMIN_API_KEY not set" },
+        { ok: false, error: "Server misconfiguration: JWT_SECRET not set" },
         500
       );
     }
@@ -36,28 +31,11 @@ export const adminAuthMiddleware = (): MiddlewareHandler<{
       );
     }
 
-    // Constant-time comparison to prevent timing attacks.
-    if (!timingSafeEqual(token, adminKey)) {
-      return c.json({ ok: false, error: "Unauthorized: invalid API key" }, 401);
+    try {
+      await verify(token, c.env.JWT_SECRET);
+      await next();
+    } catch {
+      return c.json({ ok: false, error: "Unauthorized: invalid or expired token" }, 401);
     }
-
-    await next();
   };
 };
-
-/** Simple constant-time string comparison (no external dependency needed). */
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) {
-    // Still iterate to avoid early-exit timing leak.
-    let diff = 0;
-    for (let i = 0; i < Math.max(a.length, b.length); i++) {
-      diff |= (a.charCodeAt(i) ?? 0) ^ (b.charCodeAt(i) ?? 0);
-    }
-    return false;
-  }
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return diff === 0;
-}

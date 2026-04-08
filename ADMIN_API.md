@@ -7,61 +7,96 @@
 
 ## Authentication
 
-Every request to `/admin/*` must include the API key as a Bearer token:
+Admin access uses a **username + password login** that returns a short-lived JWT token.
+All requests to `/admin/*` (except `/admin/login`) require this token.
+
+### Login
 
 ```
-Authorization: Bearer <ADMIN_API_KEY>
+POST /admin/login
 ```
 
-The key is set by the backend operator during setup (`wrangler secret put ADMIN_API_KEY`).
+**Request body**
+```json
+{ "username": "your-admin-username", "password": "your-admin-password" }
+```
 
-**Store the key securely.** Do not expose it in client-side JavaScript, commit it
-to source control, or log it. The recommended pattern is to keep it in an
-environment variable on your portal server and proxy requests server-side, or
-store it in a secure secrets manager.
+**Response `data`**
+```json
+{ "token": "eyJhbGci..." }
+```
 
-### Auth error responses
+The token expires after **8 hours**. Store it in memory (or `sessionStorage`) and
+re-login when it expires.
+
+**Errors**
 
 | HTTP | `error` | What happened |
 |---|---|---|
-| `401` | `"Unauthorized: missing or malformed Authorization header"` | Header is absent or not in `Bearer <token>` format |
-| `401` | `"Unauthorized: invalid API key"` | Wrong key |
-| `500` | `"Server misconfiguration: ADMIN_API_KEY not set"` | Backend is not configured — contact the backend operator |
+| `401` | `"Invalid username or password"` | Wrong credentials |
+| `500` | `"Server misconfiguration: admin credentials not set"` | Backend not configured |
 
-### How to attach the header
+---
+
+### Attaching the token
+
+Pass the token as a Bearer header on every subsequent request:
+
+```
+Authorization: Bearer <token>
+```
 
 ```javascript
-// Recommended: build a single authenticated fetch wrapper
 const API_BASE = 'https://<your-worker>.workers.dev';
 
+// Login and store token
+async function adminLogin(username, password) {
+  const res  = await fetch(`${API_BASE}/admin/login`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ username, password }),
+  });
+  const body = await res.json();
+  if (!body.ok) throw new Error(body.error);
+  sessionStorage.setItem('adminToken', body.data.token);
+}
+
+// Authenticated fetch wrapper
 async function adminFetch(path, options = {}) {
+  const token = sessionStorage.getItem('adminToken');
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.ADMIN_API_KEY}`,
+      'Authorization': `Bearer ${token}`,
       ...options.headers,
     },
   });
 
   const body = await res.json();
-
   if (!res.ok || !body.ok) {
     throw new AdminApiError(body.error ?? 'Unknown error', res.status, body.details);
   }
-
   return body.data;
 }
 
 class AdminApiError extends Error {
   constructor(message, status, details) {
     super(message);
-    this.name  = 'AdminApiError';
+    this.name    = 'AdminApiError';
     this.status  = status;
-    this.details = details; // present on 422 validation errors
+    this.details = details;
   }
 }
 ```
+
+### Auth error responses
+
+| HTTP | `error` | What happened |
+|---|---|---|
+| `401` | `"Unauthorized: missing or malformed Authorization header"` | No Bearer token sent |
+| `401` | `"Unauthorized: invalid or expired token"` | Token wrong or expired — re-login |
+| `500` | `"Server misconfiguration: JWT_SECRET not set"` | Backend not configured |
 
 ---
 
@@ -525,12 +560,13 @@ These are suggestions — build whatever fits your workflow.
 
 ## Endpoints summary
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/admin/products` | List all products (incl. inactive) |
-| `GET` | `/admin/products/:id` | Get single product |
-| `POST` | `/admin/products` | Create product → `201` |
-| `PUT` | `/admin/products/:id` | Partial update |
-| `DELETE` | `/admin/products/:id` | Hard delete |
-| `POST` | `/admin/images/upload` | Upload image to R2 → `201` with `{ url, key }` |
-| `DELETE` | `/admin/images/:key` | Delete image from R2 |
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/admin/login` | — | Login → JWT token (8 hour expiry) |
+| `GET` | `/admin/products` | JWT | List all products (incl. inactive) |
+| `GET` | `/admin/products/:id` | JWT | Get single product |
+| `POST` | `/admin/products` | JWT | Create product → `201` |
+| `PUT` | `/admin/products/:id` | JWT | Partial update |
+| `DELETE` | `/admin/products/:id` | JWT | Hard delete |
+| `POST` | `/admin/images/upload` | JWT | Upload image to R2 → `201` with `{ url, key }` |
+| `DELETE` | `/admin/images/:key` | JWT | Delete image from R2 |
