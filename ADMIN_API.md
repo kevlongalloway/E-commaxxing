@@ -397,6 +397,19 @@ await adminFetch(`/admin/products/${productId}`, {
 | `400` | `"Request must be multipart/form-data"` | Wrong content type |
 | `500` | `"R2 bucket not configured"` | `IMAGES` binding missing — check wrangler.toml |
 
+> **Images replace, not append.** The `images` field on a product is always the
+> complete array. To add an image without losing existing ones, fetch the product
+> first, append the new URL, then `PUT` the full array back:
+> ```javascript
+> const product = await adminFetch(`/admin/products/${productId}`);
+> const { url }  = await uploadImage(file);
+> await adminFetch(`/admin/products/${productId}`, {
+>   method: 'PUT',
+>   body: JSON.stringify({ images: [...product.images, url] }),
+> });
+> ```
+> To remove one image, filter it out of the array and `PUT` the remainder.
+
 ---
 
 ### Delete image
@@ -427,7 +440,7 @@ await adminFetch(`/admin/images/${key}`, { method: 'DELETE' });
 | Status | Meaning |
 |---|---|
 | `200` | OK |
-| `201` | Product created |
+| `201` | Resource created (product or image upload) |
 | `401` | Missing or invalid API key |
 | `404` | Product not found |
 | `422` | Validation failed — `details` has field-level messages |
@@ -504,6 +517,9 @@ These are suggestions — build whatever fits your workflow.
 | Toggle active | `PUT /admin/products/:id` with `{ active: !current }` |
 | Bulk deactivate | Loop `PUT /admin/products/:id` with `{ active: false }` for each selected ID |
 | Delete with confirmation | Confirm modal → `DELETE /admin/products/:id` |
+| Image picker / uploader | `POST /admin/images/upload` → append URL → `PUT /admin/products/:id` |
+| Remove image | Filter URL out of `product.images` → `PUT /admin/products/:id` with trimmed array |
+| Delete image from storage | `DELETE /admin/images/:key` (use the `key` returned from upload) |
 
 ---
 

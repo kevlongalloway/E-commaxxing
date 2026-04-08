@@ -88,7 +88,7 @@ Returns a single product. `404` if not found or inactive.
 | `description` | string | May be empty string |
 | `price` | integer | Smallest currency unit |
 | `currency` | string | ISO 4217 lowercase (`"usd"`, `"eur"`) |
-| `images` | string[] | CDN URLs, may be empty array |
+| `images` | string[] | CDN URLs, may be empty array. First entry is the primary/thumbnail image. |
 | `metadata` | object | Arbitrary key/value pairs set by admin |
 | `stock` | integer | `-1` = unlimited |
 | `active` | boolean | Always `true` on public endpoints |
@@ -282,6 +282,17 @@ function isAvailable(product) {
 function toLineItem(productId, quantity) {
   return { productId, quantity };
 }
+
+// Images — the `images` field is always an array, may be empty.
+// The first entry is treated as the primary/thumbnail image.
+// Always guard against an empty array.
+
+function getPrimaryImage(product, fallback = '/placeholder.png') {
+  return product.images.length > 0 ? product.images[0] : fallback;
+}
+
+// Render all images (e.g. a gallery)
+// product.images.map(url => `<img src="${url}" alt="${product.name}" />`)
 ```
 
 ---
