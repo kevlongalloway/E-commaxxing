@@ -10,6 +10,7 @@ import { admin } from "./routes/admin.js";
 import { checkout } from "./routes/checkout.js";
 import { webhooks } from "./routes/webhooks.js";
 import images from "./routes/images.js";
+import { auth } from "./routes/auth.js";
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -42,6 +43,9 @@ app.get("/", (c) =>
 app.get("/health", (c) => c.json({ ok: true, data: { status: "healthy" } }));
 
 // ─── Public Routes ────────────────────────────────────────────────────────────
+
+// User authentication (register, login, me)
+app.route("/auth", auth);
 
 // Product catalog (read-only, publicly accessible)
 app.route("/products", products);

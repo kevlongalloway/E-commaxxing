@@ -11,6 +11,7 @@ export type Bindings = {
   STRIPE_SECRET_KEY: string;
   STRIPE_WEBHOOK_SECRET: string;
   ADMIN_API_KEY: string;
+  JWT_SECRET: string;
   MONGODB_URI: string; // only required when DB_ADAPTER = "mongodb"
 
   // ── Public vars (set in wrangler.toml [vars]) ──
@@ -57,6 +58,28 @@ export type CreateProductInput = {
 
 export type UpdateProductInput = Partial<CreateProductInput>;
 
+// ─── User Models ──────────────────────────────────────────────────────────────
+
+export type User = {
+  id: string;
+  email: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type UserWithHash = User & { password_hash: string };
+
+export type CreateUserInput = {
+  email: string;
+  password: string;
+};
+
+export type JwtPayload = {
+  sub: string;   // user id
+  email: string;
+  exp: number;   // unix timestamp
+};
+
 // ─── Database Adapter Interface ───────────────────────────────────────────────
 
 export type ProductQueryOptions = {
@@ -76,6 +99,11 @@ export interface Database {
     stripeProductId: string,
     stripePriceId: string
   ): Promise<void>;
+
+  // ── User methods ──
+  createUser(input: CreateUserInput): Promise<User>;
+  getUserByEmail(email: string): Promise<UserWithHash | null>;
+  getUserById(id: string): Promise<User | null>;
 }
 
 // ─── API Response helpers ─────────────────────────────────────────────────────

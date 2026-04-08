@@ -5,6 +5,25 @@
 
 ---
 
+## Required Setup
+
+Before deploying, set these secrets:
+```
+wrangler secret put ADMIN_API_KEY
+wrangler secret put JWT_SECRET        # openssl rand -hex 32
+wrangler secret put STRIPE_SECRET_KEY
+wrangler secret put STRIPE_WEBHOOK_SECRET
+```
+
+Run all D1 migrations:
+```
+npx wrangler d1 migrations apply blackstardb
+```
+
+This creates both the `products` and `users` tables.
+
+---
+
 ## Authentication
 
 Every request to `/admin/*` must include the API key as a Bearer token:
