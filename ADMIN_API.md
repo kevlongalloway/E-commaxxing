@@ -330,6 +330,98 @@ await adminFetch(`/admin/products/${id}`, { method: 'DELETE' });
 
 ---
 
+## Image Uploads
+
+Images are stored in Cloudflare R2. Upload an image first to get a URL, then
+pass that URL in the `images` array when creating or updating a product.
+
+> **Requires R2 to be configured.** See `wrangler.toml` for setup instructions.
+
+---
+
+### Upload image
+
+```
+POST /admin/images/upload
+```
+
+Accepts a `multipart/form-data` request with a single `file` field.
+
+**Allowed file types:** `image/jpeg`, `image/png`, `image/webp`, `image/gif`
+
+**Response `data`**
+```json
+{
+  "url": "https://pub-abc123.r2.dev/550e8400-e29b-41d4-a716-446655440000.jpg",
+  "key": "550e8400-e29b-41d4-a716-446655440000.jpg"
+}
+```
+
+| Field | Description |
+|---|---|
+| `url` | Fully-qualified public URL — pass this directly into a product's `images` array |
+| `key` | R2 object key — use this if you need to delete the image later |
+
+**Example**
+```javascript
+async function uploadImage(file) {
+  const form = new FormData();
+  form.append('file', file);
+
+  const res = await fetch(`${API_BASE}/admin/images/upload`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${process.env.ADMIN_API_KEY}` },
+    body: form,
+    // Do NOT set Content-Type manually — the browser sets it with the boundary
+  });
+
+  const body = await res.json();
+  if (!body.ok) throw new Error(body.error);
+  return body.data; // { url, key }
+}
+
+// Upload then attach to a product
+const { url } = await uploadImage(fileInput.files[0]);
+await adminFetch(`/admin/products/${productId}`, {
+  method: 'PUT',
+  body: JSON.stringify({ images: [url] }),
+});
+```
+
+**Errors**
+
+| HTTP | `error` | Meaning |
+|---|---|---|
+| `400` | `"Missing \"file\" field"` | No file included in the form |
+| `400` | `"Invalid file type ..."` | File type not allowed |
+| `400` | `"Request must be multipart/form-data"` | Wrong content type |
+| `500` | `"R2 bucket not configured"` | `IMAGES` binding missing — check wrangler.toml |
+
+---
+
+### Delete image
+
+```
+DELETE /admin/images/:key
+```
+
+Deletes an image from R2 by its key (returned from the upload endpoint).
+
+**Response `data`**
+```json
+{ "deleted": "550e8400-e29b-41d4-a716-446655440000.jpg" }
+```
+
+**Example**
+```javascript
+await adminFetch(`/admin/images/${key}`, { method: 'DELETE' });
+```
+
+> **Note:** Deleting an image from R2 does not remove its URL from any products.
+> Update or delete the product separately if needed.
+
+---
+
 ## HTTP Status Codes
 
 | Status | Meaning |
@@ -424,3 +516,5 @@ These are suggestions — build whatever fits your workflow.
 | `POST` | `/admin/products` | Create product → `201` |
 | `PUT` | `/admin/products/:id` | Partial update |
 | `DELETE` | `/admin/products/:id` | Hard delete |
+| `POST` | `/admin/images/upload` | Upload image to R2 → `201` with `{ url, key }` |
+| `DELETE` | `/admin/images/:key` | Delete image from R2 |

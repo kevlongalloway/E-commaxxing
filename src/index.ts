@@ -9,6 +9,7 @@ import { products } from "./routes/products.js";
 import { admin } from "./routes/admin.js";
 import { checkout } from "./routes/checkout.js";
 import { webhooks } from "./routes/webhooks.js";
+import images from "./routes/images.js";
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -55,6 +56,7 @@ app.route("/webhooks", webhooks);
 
 app.use("/admin/*", adminAuthMiddleware());
 app.route("/admin", admin);
+app.route("/admin/images", images);
 
 // ─── 404 Handler ─────────────────────────────────────────────────────────────
 

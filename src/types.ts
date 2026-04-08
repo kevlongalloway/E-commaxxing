@@ -4,6 +4,9 @@ export type Bindings = {
   // D1 database (used when DB_ADAPTER = "d1")
   DB: D1Database;
 
+  // R2 bucket for image storage
+  IMAGES: R2Bucket;
+
   // ── Secrets (set via `wrangler secret put`) ──
   STRIPE_SECRET_KEY: string;
   STRIPE_WEBHOOK_SECRET: string;
@@ -18,6 +21,7 @@ export type Bindings = {
   CSRF_ENABLED: string;
   STRIPE_PUBLISHABLE_KEY: string;
   DEFAULT_CURRENCY: string;
+  R2_PUBLIC_URL: string;
 };
 
 // ─── Domain Models ────────────────────────────────────────────────────────────
