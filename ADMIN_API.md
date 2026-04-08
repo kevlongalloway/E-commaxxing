@@ -415,6 +415,131 @@ These are suggestions — build whatever fits your workflow.
 
 ---
 
+## Managing Product Variants (Sizes, Colors)
+
+For clothing and products with multiple sizes/colors, create variants with per-variant stock tracking.
+
+### Quick example: T-shirt with size/color variants
+
+**Product:**
+```json
+{
+  "name": "Classic T-Shirt",
+  "price": 1999,
+  "currency": "usd",
+  "stock": -1
+}
+```
+
+**Variants (create one per size/color combo):**
+```json
+{
+  "size": "Medium",
+  "color": "Black",
+  "sku": "TSHIRT-BLK-M",
+  "stock": 20
+}
+```
+
+### Variant Schema
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | UUID | Generated | Variant ID |
+| `product_id` | UUID | Generated | Parent product |
+| `size` | String | Yes | Size (e.g., "Small", "M", "Large", "10") |
+| `color` | String | No | Color name (e.g., "Black", "Navy") |
+| `sku` | String | No | Warehouse SKU code |
+| `stock` | Integer | No | Stock count. -1 = unlimited (default: -1) |
+| `metadata` | Object | No | Custom JSON (e.g., weight, barcode) |
+
+### Variant endpoints
+
+```
+GET    /admin/products/:productId/variants              — list all variants
+GET    /admin/products/:productId/variants/:variantId   — get one variant
+POST   /admin/products/:productId/variants              — create variant
+PUT    /admin/products/:productId/variants/:variantId   — update variant
+DELETE /admin/products/:productId/variants/:variantId   — delete variant
+```
+
+### Example: Create a variant
+
+```bash
+curl -X POST https://api.example.com/admin/products/prod-123/variants \
+  -H "Authorization: Bearer YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "size": "Medium",
+    "color": "Black",
+    "sku": "TSHIRT-BLK-M",
+    "stock": 20,
+    "metadata": { "barcode": "123456789" }
+  }'
+```
+
+**Response:** `201 Created`
+```json
+{
+  "ok": true,
+  "data": {
+    "id": "var-abc123",
+    "product_id": "prod-123",
+    "size": "Medium",
+    "color": "Black",
+    "sku": "TSHIRT-BLK-M",
+    "stock": 20,
+    "metadata": { "barcode": "123456789" },
+    "created_at": "2025-02-15T10:30:00Z",
+    "updated_at": "2025-02-15T10:30:00Z"
+  }
+}
+```
+
+### Example: Update variant stock
+
+```bash
+curl -X PUT https://api.example.com/admin/products/prod-123/variants/var-abc123 \
+  -H "Authorization: Bearer YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "stock": 19 }'
+```
+
+### Variant stock conventions
+
+Same as products (see [Stock conventions](#stock-conventions) above):
+- `-1` = Unlimited (not tracked)
+- `0` = Sold out
+- `1-4` = Low stock
+- `5+` = Normal stock
+
+### Checkout with variants
+
+When customer selects a size/color and checks out, include `size` and optional `color` in the line item:
+
+```json
+{
+  "items": [
+    {
+      "productId": "prod-123",
+      "size": "Medium",
+      "color": "Black",
+      "quantity": 1
+    }
+  ],
+  "successUrl": "...",
+  "cancelUrl": "..."
+}
+```
+
+The API will check the variant's stock and return `400` if insufficient or `404` if variant doesn't exist.
+
+### For more details
+
+See [PRODUCTS.md](./PRODUCTS.md) for comprehensive sizing guide, best practices, and customer-side implementation.
+
+---
+
 ## Endpoints summary
 
 | Method | Path | Description |
@@ -424,3 +549,8 @@ These are suggestions — build whatever fits your workflow.
 | `POST` | `/admin/products` | Create product → `201` |
 | `PUT` | `/admin/products/:id` | Partial update |
 | `DELETE` | `/admin/products/:id` | Hard delete |
+| `GET` | `/admin/products/:productId/variants` | List variants for product |
+| `GET` | `/admin/products/:productId/variants/:variantId` | Get single variant |
+| `POST` | `/admin/products/:productId/variants` | Create variant → `201` |
+| `PUT` | `/admin/products/:productId/variants/:variantId` | Update variant |
+| `DELETE` | `/admin/products/:productId/variants/:variantId` | Delete variant |

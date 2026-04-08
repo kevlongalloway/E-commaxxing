@@ -25,6 +25,16 @@ const createProductSchema = z.object({
 
 const updateProductSchema = createProductSchema.partial();
 
+const createVariantSchema = z.object({
+  size: z.string().min(1).max(100),
+  color: z.string().max(100).optional(),
+  sku: z.string().max(100).optional(),
+  stock: z.number().int().gte(-1).optional().default(-1),
+  metadata: z.record(z.unknown()).optional().default({}),
+});
+
+const updateVariantSchema = createVariantSchema.partial();
+
 // ─── Admin Routes (all protected by adminAuthMiddleware in index.ts) ──────────
 
 /**
@@ -154,6 +164,132 @@ admin.delete("/products/:id", async (c) => {
   } catch (e) {
     console.error(`DELETE /admin/products/${id} error:`, e);
     return c.json(err("Failed to delete product"), 500);
+  }
+});
+
+// ─── Variant Management Routes ────────────────────────────────────────────────
+
+/**
+ * GET /admin/products/:productId/variants
+ *
+ * Lists all variants for a product.
+ *
+ * Response: { ok: true, data: ProductVariant[] }
+ */
+admin.get("/products/:productId/variants", async (c) => {
+  const productId = c.req.param("productId");
+  try {
+    const db = getDatabase(c.env);
+    const product = await db.getProduct(productId);
+    if (!product) return c.json(err("Product not found"), 404);
+
+    const variants = await db.getProductVariants(productId);
+    return c.json(ok(variants));
+  } catch (e) {
+    console.error(`GET /admin/products/${productId}/variants error:`, e);
+    return c.json(err("Failed to fetch variants"), 500);
+  }
+});
+
+/**
+ * GET /admin/products/:productId/variants/:variantId
+ *
+ * Returns a single variant by ID.
+ *
+ * Response: { ok: true, data: ProductVariant }
+ */
+admin.get("/products/:productId/variants/:variantId", async (c) => {
+  const variantId = c.req.param("variantId");
+  try {
+    const db = getDatabase(c.env);
+    const variant = await db.getProductVariant(variantId);
+    if (!variant) return c.json(err("Variant not found"), 404);
+    return c.json(ok(variant));
+  } catch (e) {
+    console.error(`GET /admin/variants/${variantId} error:`, e);
+    return c.json(err("Failed to fetch variant"), 500);
+  }
+});
+
+/**
+ * POST /admin/products/:productId/variants
+ *
+ * Creates a new variant for a product.
+ *
+ * Body: { size, color?, sku?, stock?, metadata? }
+ * Response: { ok: true, data: ProductVariant }
+ */
+admin.post(
+  "/products/:productId/variants",
+  zValidator("json", createVariantSchema, (result, c) => {
+    if (!result.success) {
+      return c.json(err("Validation failed", result.error.flatten()), 422);
+    }
+  }),
+  async (c) => {
+    const productId = c.req.param("productId");
+    const input = c.req.valid("json");
+    try {
+      const db = getDatabase(c.env);
+      const product = await db.getProduct(productId);
+      if (!product) return c.json(err("Product not found"), 404);
+
+      const variant = await db.createVariant(productId, input);
+      return c.json(ok(variant), 201);
+    } catch (e) {
+      console.error(`POST /admin/products/${productId}/variants error:`, e);
+      return c.json(err("Failed to create variant"), 500);
+    }
+  }
+);
+
+/**
+ * PUT /admin/products/:productId/variants/:variantId
+ *
+ * Updates an existing variant.
+ *
+ * Body: { size?, color?, sku?, stock?, metadata? }
+ * Response: { ok: true, data: ProductVariant }
+ */
+admin.put(
+  "/products/:productId/variants/:variantId",
+  zValidator("json", updateVariantSchema, (result, c) => {
+    if (!result.success) {
+      return c.json(err("Validation failed", result.error.flatten()), 422);
+    }
+  }),
+  async (c) => {
+    const variantId = c.req.param("variantId");
+    const input = c.req.valid("json");
+    try {
+      const db = getDatabase(c.env);
+      const variant = await db.updateVariant(variantId, input);
+      if (!variant) return c.json(err("Variant not found"), 404);
+      return c.json(ok(variant));
+    } catch (e) {
+      console.error(`PUT /admin/variants/${variantId} error:`, e);
+      return c.json(err("Failed to update variant"), 500);
+    }
+  }
+);
+
+/**
+ * DELETE /admin/products/:productId/variants/:variantId
+ *
+ * Deletes a variant.
+ *
+ * Response: { ok: true, data: { deleted: true } }
+ */
+admin.delete("/products/:productId/variants/:variantId", async (c) => {
+  const variantId = c.req.param("variantId");
+  try {
+    const db = getDatabase(c.env);
+    const deleted = await db.deleteVariant(variantId);
+    if (!deleted) return c.json(err("Variant not found"), 404);
+    return c.json(ok({ deleted: true }));
+  } catch (e) {
+    console.error(`DELETE /admin/variants/${variantId} error:`, e);
+    return c.json(err("Failed to delete variant"), 500);
   }
 });
 

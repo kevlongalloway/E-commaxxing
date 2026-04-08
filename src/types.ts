@@ -40,6 +40,29 @@ export type Product = {
   updated_at: string;
 };
 
+export type ProductVariant = {
+  id: string;
+  product_id: string;
+  size: string;
+  color?: string | null;
+  sku?: string | null;
+  /** -1 means unlimited */
+  stock: number;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CreateVariantInput = {
+  size: string;
+  color?: string;
+  sku?: string;
+  stock?: number;
+  metadata?: Record<string, unknown>;
+};
+
+export type UpdateVariantInput = Partial<CreateVariantInput>;
+
 export type CreateProductInput = {
   name: string;
   description?: string;
@@ -72,6 +95,11 @@ export interface Database {
     stripeProductId: string,
     stripePriceId: string
   ): Promise<void>;
+  getProductVariants(productId: string): Promise<ProductVariant[]>;
+  getProductVariant(id: string): Promise<ProductVariant | null>;
+  createVariant(productId: string, input: CreateVariantInput): Promise<ProductVariant>;
+  updateVariant(id: string, input: UpdateVariantInput): Promise<ProductVariant | null>;
+  deleteVariant(id: string): Promise<boolean>;
 }
 
 // ─── API Response helpers ─────────────────────────────────────────────────────

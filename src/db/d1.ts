@@ -5,6 +5,9 @@ import type {
   CreateProductInput,
   UpdateProductInput,
   ProductQueryOptions,
+  ProductVariant,
+  CreateVariantInput,
+  UpdateVariantInput,
 } from "../types.js";
 
 // ─── Row shape coming back from D1 ───────────────────────────────────────────
@@ -24,12 +27,31 @@ type ProductRow = {
   updated_at: string;
 };
 
+type VariantRow = {
+  id: string;
+  product_id: string;
+  size: string;
+  color: string | null;
+  sku: string | null;
+  stock: number;
+  metadata: string;    // JSON string
+  created_at: string;
+  updated_at: string;
+};
+
 function rowToProduct(row: ProductRow): Product {
   return {
     ...row,
     images: JSON.parse(row.images) as string[],
     metadata: JSON.parse(row.metadata) as Record<string, unknown>,
     active: row.active === 1,
+  };
+}
+
+function rowToVariant(row: VariantRow): ProductVariant {
+  return {
+    ...row,
+    metadata: JSON.parse(row.metadata) as Record<string, unknown>,
   };
 }
 
@@ -169,6 +191,108 @@ export class D1Database implements Database {
       )
       .bind(stripeProductId, stripePriceId, new Date().toISOString(), id)
       .run();
+  }
+
+  async getProductVariants(productId: string): Promise<ProductVariant[]> {
+    const { results } = await this.db
+      .prepare("SELECT * FROM product_variants WHERE product_id = ?1 ORDER BY created_at ASC")
+      .bind(productId)
+      .all<VariantRow>();
+
+    return (results ?? []).map(rowToVariant);
+  }
+
+  async getProductVariant(id: string): Promise<ProductVariant | null> {
+    const row = await this.db
+      .prepare("SELECT * FROM product_variants WHERE id = ?1")
+      .bind(id)
+      .first<VariantRow>();
+
+    return row ? rowToVariant(row) : null;
+  }
+
+  async createVariant(
+    productId: string,
+    input: CreateVariantInput
+  ): Promise<ProductVariant> {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+
+    const variant: ProductVariant = {
+      id,
+      product_id: productId,
+      size: input.size,
+      color: input.color ?? null,
+      sku: input.sku ?? null,
+      stock: input.stock ?? -1,
+      metadata: input.metadata ?? {},
+      created_at: now,
+      updated_at: now,
+    };
+
+    await this.db
+      .prepare(
+        `INSERT INTO product_variants
+          (id, product_id, size, color, sku, stock, metadata, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
+      )
+      .bind(
+        variant.id,
+        variant.product_id,
+        variant.size,
+        variant.color,
+        variant.sku,
+        variant.stock,
+        JSON.stringify(variant.metadata),
+        variant.created_at,
+        variant.updated_at
+      )
+      .run();
+
+    return variant;
+  }
+
+  async updateVariant(
+    id: string,
+    input: UpdateVariantInput
+  ): Promise<ProductVariant | null> {
+    const existing = await this.getProductVariant(id);
+    if (!existing) return null;
+
+    const now = new Date().toISOString();
+    const updated: ProductVariant = {
+      ...existing,
+      ...input,
+      metadata: input.metadata ?? existing.metadata,
+      updated_at: now,
+    };
+
+    await this.db
+      .prepare(
+        `UPDATE product_variants SET
+           size = ?1, color = ?2, sku = ?3, stock = ?4, metadata = ?5, updated_at = ?6
+         WHERE id = ?7`
+      )
+      .bind(
+        updated.size,
+        updated.color,
+        updated.sku,
+        updated.stock,
+        JSON.stringify(updated.metadata),
+        updated.updated_at,
+        id
+      )
+      .run();
+
+    return updated;
+  }
+
+  async deleteVariant(id: string): Promise<boolean> {
+    const { meta } = await this.db
+      .prepare("DELETE FROM product_variants WHERE id = ?1")
+      .bind(id)
+      .run();
+    return (meta.changes ?? 0) > 0;
   }
 }
 

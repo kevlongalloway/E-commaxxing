@@ -61,4 +61,33 @@ products.get("/:id", async (c) => {
   }
 });
 
+/**
+ * GET /products/:id/variants
+ *
+ * Returns all variants (sizes/colors) for a product.
+ *
+ * Response: { ok: true, data: ProductVariant[] }
+ */
+products.get("/:id/variants", async (c) => {
+  const id = c.req.param("id");
+
+  try {
+    const db = getDatabase(c.env);
+    const product = await db.getProduct(id);
+
+    if (!product) {
+      return c.json(err("Product not found"), 404);
+    }
+    if (!product.active) {
+      return c.json(err("Product not found"), 404);
+    }
+
+    const variants = await db.getProductVariants(id);
+    return c.json(ok(variants));
+  } catch (e) {
+    console.error(`GET /products/${id}/variants error:`, e);
+    return c.json(err("Failed to fetch variants"), 500);
+  }
+});
+
 export { products };

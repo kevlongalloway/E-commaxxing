@@ -16,7 +16,7 @@ function getStripe(secretKey: string): Stripe {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type LineItem = { productId: string; quantity: number };
+type LineItem = { productId: string; quantity: number; size?: string; color?: string };
 
 function parseLineItems(body: unknown): LineItem[] | null {
   if (!body || typeof body !== "object" || !Array.isArray((body as { items?: unknown }).items)) {
@@ -29,7 +29,9 @@ function parseLineItems(body: unknown): LineItem[] | null {
       i !== null &&
       typeof (i as { productId: unknown }).productId === "string" &&
       typeof (i as { quantity: unknown }).quantity === "number" &&
-      (i as { quantity: number }).quantity > 0
+      (i as { quantity: number }).quantity > 0 &&
+      ((i as { size?: unknown }).size === undefined || typeof (i as { size?: unknown }).size === "string") &&
+      ((i as { color?: unknown }).color === undefined || typeof (i as { color?: unknown }).color === "string")
   )
     ? (items as LineItem[])
     : null;
@@ -85,7 +87,7 @@ checkout.post("/session", async (c) => {
       items.map((item) => db.getProduct(item.productId))
     );
 
-    // Verify all products exist and are active.
+    // Verify all products exist and are active, and check stock (per variant if size provided).
     for (let i = 0; i < products.length; i++) {
       const p = products[i];
       const item = items[i];
@@ -95,29 +97,63 @@ checkout.post("/session", async (c) => {
       if (!p.active) {
         return c.json(err(`Product is no longer available: ${p.name}`), 400);
       }
-      if (p.stock !== -1 && p.stock < item!.quantity) {
-        return c.json(
-          err(`Insufficient stock for "${p.name}" (available: ${p.stock})`),
-          400
+
+      // If size is specified, check variant stock. Otherwise check product stock.
+      if (item!.size) {
+        const variants = await db.getProductVariants(p.id);
+        const variant = variants.find(
+          (v) => v.size === item!.size && (!item!.color || v.color === item!.color)
         );
+        if (!variant) {
+          return c.json(
+            err(`"${p.name}" - ${item!.size}${item!.color ? ` (${item!.color})` : ""} not found`),
+            404
+          );
+        }
+        if (variant.stock !== -1 && variant.stock < item!.quantity) {
+          return c.json(
+            err(
+              `Insufficient stock for "${p.name}" - ${item!.size}${item!.color ? ` (${item!.color})` : ""} (available: ${variant.stock})`
+            ),
+            400
+          );
+        }
+      } else {
+        if (p.stock !== -1 && p.stock < item!.quantity) {
+          return c.json(
+            err(`Insufficient stock for "${p.name}" (available: ${p.stock})`),
+            400
+          );
+        }
       }
     }
 
     // Build Stripe line items using inline price_data (no pre-sync required).
     const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = products.map(
-      (p, i) => ({
-        price_data: {
-          currency: p!.currency,
-          product_data: {
-            name: p!.name,
-            description: p!.description || undefined,
-            images: p!.images.slice(0, 8), // Stripe max 8 images
-            metadata: { product_id: p!.id },
+      (p, i) => {
+        const item = items[i]!;
+        const productName = item.size
+          ? `${p!.name} - ${item.size}${item.color ? ` (${item.color})` : ""}`
+          : p!.name;
+
+        return {
+          price_data: {
+            currency: p!.currency,
+            product_data: {
+              name: productName,
+              description: p!.description || undefined,
+              images: p!.images.slice(0, 8), // Stripe max 8 images
+              metadata: {
+                product_id: p!.id,
+                ...(item.size && { size: item.size }),
+                ...(item.color && { color: item.color }),
+              },
+            },
+            unit_amount: p!.price,
           },
-          unit_amount: p!.price,
-        },
-        quantity: items[i]!.quantity,
-      })
+          quantity: item.quantity,
+        };
+      }
     );
 
     const session = await stripe.checkout.sessions.create({
@@ -128,6 +164,8 @@ checkout.post("/session", async (c) => {
       metadata: {
         product_ids: items.map((i) => i.productId).join(","),
         quantities: items.map((i) => i.quantity).join(","),
+        sizes: items.map((i) => i.size || "").join(","),
+        colors: items.map((i) => i.color || "").join(","),
       },
     });
 
@@ -195,8 +233,26 @@ checkout.post("/intent", async (c) => {
       const item = items[i];
       if (!p) return c.json(err(`Product not found: ${item!.productId}`), 404);
       if (!p.active) return c.json(err(`Product unavailable: ${p.name}`), 400);
-      if (p.stock !== -1 && p.stock < item!.quantity) {
-        return c.json(err(`Insufficient stock for "${p.name}"`), 400);
+
+      // If size is specified, check variant stock. Otherwise check product stock.
+      if (item!.size) {
+        const variants = await db.getProductVariants(p.id);
+        const variant = variants.find(
+          (v) => v.size === item!.size && (!item!.color || v.color === item!.color)
+        );
+        if (!variant) {
+          return c.json(
+            err(`"${p.name}" - ${item!.size}${item!.color ? ` (${item!.color})` : ""} not found`),
+            404
+          );
+        }
+        if (variant.stock !== -1 && variant.stock < item!.quantity) {
+          return c.json(err(`Insufficient stock for "${p.name}" - ${item!.size}`), 400);
+        }
+      } else {
+        if (p.stock !== -1 && p.stock < item!.quantity) {
+          return c.json(err(`Insufficient stock for "${p.name}"`), 400);
+        }
       }
     }
 
@@ -222,6 +278,8 @@ checkout.post("/intent", async (c) => {
       metadata: {
         product_ids: items.map((i) => i.productId).join(","),
         quantities: items.map((i) => i.quantity).join(","),
+        sizes: items.map((i) => i.size || "").join(","),
+        colors: items.map((i) => i.color || "").join(","),
       },
     });
 

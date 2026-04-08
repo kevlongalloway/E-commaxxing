@@ -95,6 +95,66 @@ Returns a single product. `404` if not found or inactive.
 
 ---
 
+## Product Variants
+
+For products with sizes, colors, or other options, fetch variants to show availability per size/color.
+
+### List variants
+
+```
+GET /products/:id/variants
+```
+
+Returns all size/color combinations for a product with their individual stock levels.
+
+**Response `data`** — array of ProductVariant objects.
+
+---
+
+### Variant schema
+
+```json
+{
+  "id":         "var-abc123",
+  "product_id": "550e8400-e29b-41d4-a716-446655440000",
+  "size":       "Medium",
+  "color":      "Black",
+  "sku":        "TSHIRT-BLK-M",
+  "stock":      20,
+  "metadata":   { "barcode": "123456789" },
+  "created_at": "2025-02-15T10:30:00Z",
+  "updated_at": "2025-02-15T10:30:00Z"
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string (UUID) | Variant identifier |
+| `product_id` | string (UUID) | Parent product |
+| `size` | string | Size designation (e.g., "Small", "M", "10") |
+| `color` | string \| null | Color name if applicable |
+| `sku` | string \| null | SKU code for inventory systems |
+| `stock` | integer | `-1` = unlimited, `0` = sold out, `1+` = available |
+| `metadata` | object | Custom variant data |
+
+### Example: Display available sizes
+
+```javascript
+const product = await fetch('/products/550e8400-...').then(r => r.json());
+const variants = await fetch('/products/550e8400-.../variants').then(r => r.json());
+
+variants.data.forEach(variant => {
+  const status = variant.stock === 0 ? 'Sold Out' :
+                 variant.stock === -1 ? 'In Stock' :
+                 variant.stock < 5 ? `Limited (${variant.stock} left)` :
+                 'In Stock';
+
+  console.log(`${variant.size}${variant.color ? ' - ' + variant.color : ''}: ${status}`);
+});
+```
+
+---
+
 ## Checkout
 
 ### Stripe Checkout Session (redirect)
@@ -111,7 +171,8 @@ POST /checkout/session
 ```json
 {
   "items": [
-    { "productId": "550e8400-...", "quantity": 2 }
+    { "productId": "550e8400-...", "quantity": 2 },
+    { "productId": "550e8401-...", "size": "Medium", "color": "Black", "quantity": 1 }
   ],
   "successUrl": "https://myshop.com/success?session_id={CHECKOUT_SESSION_ID}",
   "cancelUrl":  "https://myshop.com/cart"
@@ -122,6 +183,8 @@ POST /checkout/session
 |---|---|---|---|
 | `items` | array | Yes | At least one item |
 | `items[].productId` | string | Yes | Must match a product `id` |
+| `items[].size` | string | No | Size/option (required if product has variants you want to track) |
+| `items[].color` | string | No | Color (optional, used with size) |
 | `items[].quantity` | integer > 0 | Yes | |
 | `successUrl` | string | Yes | Stripe appends `{CHECKOUT_SESSION_ID}` if included in the template |
 | `cancelUrl` | string | Yes | Where to send the customer if they abandon checkout |
@@ -143,7 +206,8 @@ POST /checkout/session
 |---|---|---|
 | `400` | "Product not found: ..." | `productId` doesn't exist |
 | `400` | "Product is no longer available: ..." | Product is inactive |
-| `400` | "Insufficient stock for ..." | `quantity` exceeds available stock |
+| `404` | "Product - Size (Color) not found" | Variant doesn't exist |
+| `400` | "Insufficient stock for Product - Size (Color)" | Variant stock is insufficient |
 | `503` | "Stripe is not configured..." | Admin hasn't set Stripe keys yet |
 
 ---
@@ -161,12 +225,13 @@ POST /checkout/intent
 ```json
 {
   "items": [
-    { "productId": "550e8400-...", "quantity": 1 }
+    { "productId": "550e8400-...", "quantity": 1 },
+    { "productId": "550e8401-...", "size": "Medium", "color": "Black", "quantity": 2 }
   ]
 }
 ```
 
-All items must share the same currency. Mixed-currency carts are rejected.
+All items must share the same currency. Mixed-currency carts are rejected. Include `size` (and optionally `color`) to specify a variant.
 
 **Response `data`**
 
@@ -279,8 +344,19 @@ function isAvailable(product) {
 }
 
 // Build a cart item for the checkout endpoints
-function toLineItem(productId, quantity) {
-  return { productId, quantity };
+function toLineItem(productId, quantity, size, color) {
+  const item = { productId, quantity };
+  if (size) item.size = size;
+  if (color) item.color = color;
+  return item;
+}
+
+// Check variant availability
+function getVariantStatus(variant) {
+  if (variant.stock === 0) return 'Sold Out';
+  if (variant.stock === -1) return 'In Stock';
+  if (variant.stock < 5) return `Limited (${variant.stock} left)`;
+  return 'In Stock';
 }
 ```
 
@@ -292,5 +368,6 @@ function toLineItem(productId, quantity) {
 |---|---|---|---|
 | `GET` | `/products` | — | List active products |
 | `GET` | `/products/:id` | — | Single product |
+| `GET` | `/products/:id/variants` | — | List variants (sizes/colors) |
 | `POST` | `/checkout/session` | — | Stripe hosted checkout → get redirect URL |
 | `POST` | `/checkout/intent` | — | Stripe Payment Intent → get `clientSecret` |
