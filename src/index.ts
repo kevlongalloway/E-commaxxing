@@ -55,11 +55,17 @@ app.route("/webhooks", webhooks);
 
 // ─── Admin Routes ─────────────────────────────────────────────────────────────
 
-// Login is public — must be registered before the auth middleware.
+// Login is public — no auth required.
 app.route("/admin/login", adminLogin);
 
-// Everything else under /admin/* requires a valid JWT.
-app.use("/admin/*", adminAuthMiddleware());
+// Protect all other /admin/* routes with JWT auth.
+// Explicitly exclude /admin/login so the middleware never runs on it.
+app.use("/admin/*", async (c, next) => {
+  if (c.req.path === "/admin/login" || c.req.path === "/admin/login/") {
+    return next();
+  }
+  return adminAuthMiddleware()(c, next);
+});
 app.route("/admin", admin);
 app.route("/admin/images", images);
 
