@@ -4,8 +4,8 @@
   "description": "Serverless e-commerce backend on Cloudflare Workers",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "dev": "wrangler d1 migrations apply blackstardb --local && wrangler dev",
+    "deploy": "wrangler d1 migrations apply blackstardb --remote && wrangler deploy",
     "db:migrate": "wrangler d1 migrations apply blackstardb",
     "db:migrate:local": "wrangler d1 migrations apply blackstardb --local",
     "db:studio": "wrangler d1 studio blackstardb",
