@@ -47,7 +47,7 @@ DEFAULT_CURRENCY = "usd"
 
 # Public base URL of your R2 bucket (from Cloudflare dashboard → R2 → bucket → Public Access)
 # Example: "https://pub-abc123def456.r2.dev"
-R2_PUBLIC_URL = "REPLACE_WITH_YOUR_R2_PUBLIC_URL"
+R2_PUBLIC_URL = "https://eda0e292fe21348c0a86995394cd58a0.r2.cloudflarestorage.com/blackstarr2"
 
 # ─── Local Development ────────────────────────────────────────────────────────
 # For secrets during local dev, create a `.dev.vars` file (see .dev.vars.example)
