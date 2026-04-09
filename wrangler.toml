@@ -14,9 +14,9 @@ database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 # ─── R2 Image Storage ────────────────────────────────────────────────────────
 # Create a bucket with: wrangler r2 bucket create <name>
 # Then enable public access in the Cloudflare dashboard to get the public URL.
-[[r2_buckets]]
-binding = "IMAGES"
-bucket_name = "REPLACE_WITH_YOUR_R2_BUCKET_NAME"
+# [[r2_buckets]]
+# binding = "IMAGES"
+# bucket_name = "REPLACE_WITH_YOUR_R2_BUCKET_NAME"
 
 # ─── Public Variables (non-sensitive) ────────────────────────────────────────
 [vars]

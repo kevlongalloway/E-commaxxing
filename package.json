@@ -6,9 +6,9 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:migrate": "wrangler d1 migrations apply ecommaxxing-db",
-    "db:migrate:local": "wrangler d1 migrations apply ecommaxxing-db --local",
-    "db:studio": "wrangler d1 studio ecommaxxing-db",
+    "db:migrate": "wrangler d1 migrations apply blackstardb",
+    "db:migrate:local": "wrangler d1 migrations apply blackstardb --local",
+    "db:studio": "wrangler d1 studio blackstardb",
     "setup": "node setup.mjs",
     "type-check": "tsc --noEmit"
   },
