@@ -28,9 +28,11 @@ adminLogin.post("/", zValidator("json", loginSchema), async (c) => {
     return c.json(err("Invalid username or password"), 401);
   }
 
+  const now = Math.floor(Date.now() / 1000);
   const token = await sign(
-    { sub: "admin", exp: Math.floor(Date.now() / 1000) + TOKEN_TTL },
-    c.env.JWT_SECRET
+    { sub: "admin", iat: now, exp: now + TOKEN_TTL },
+    c.env.JWT_SECRET,
+    "HS256"
   );
 
   return c.json(ok({ token }));

@@ -32,7 +32,7 @@ export const adminAuthMiddleware = (): MiddlewareHandler<{
     }
 
     try {
-      await verify(token, c.env.JWT_SECRET);
+      await verify(token.trim(), c.env.JWT_SECRET, "HS256");
     } catch {
       return c.json({ ok: false, error: "Unauthorized: invalid or expired token" }, 401);
     }
