@@ -14,9 +14,9 @@ database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 # ─── R2 Image Storage ────────────────────────────────────────────────────────
 # Create a bucket with: wrangler r2 bucket create <name>
 # Then enable public access in the Cloudflare dashboard to get the public URL.
-# [[r2_buckets]]
-# binding = "IMAGES"
-# bucket_name = "REPLACE_WITH_YOUR_R2_BUCKET_NAME"
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "blackstarr2"
 
 # ─── Public Variables (non-sensitive) ────────────────────────────────────────
 [vars]
@@ -47,7 +47,7 @@ DEFAULT_CURRENCY = "usd"
 
 # Public base URL of your R2 bucket (from Cloudflare dashboard → R2 → bucket → Public Access)
 # Example: "https://pub-abc123def456.r2.dev"
-R2_PUBLIC_URL = "https://eda0e292fe21348c0a86995394cd58a0.r2.cloudflarestorage.com/blackstarr2"
+R2_PUBLIC_URL = "https://pub-1a71d6fe08994f2daf1877353b918043.r2.dev"
 
 # ─── Local Development ────────────────────────────────────────────────────────
 # For secrets during local dev, create a `.dev.vars` file (see .dev.vars.example)
