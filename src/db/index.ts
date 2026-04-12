@@ -1,6 +1,7 @@
 import type { Database, Bindings } from "../types.js";
 import { D1Database } from "./d1.js";
 import { MongoDatabase } from "./mongo.js";
+export { calculateDiscountAmount } from "../types.js";
 
 /**
  * Returns the configured database adapter.

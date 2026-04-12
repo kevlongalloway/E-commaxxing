@@ -12,6 +12,12 @@ import type {
   OrderQueryOptions,
   OrderStatus,
   FulfillmentStatus,
+  Discount,
+  CreateDiscountInput,
+  UpdateDiscountInput,
+  DiscountQueryOptions,
+  DiscountType,
+  DiscountAppliesTo,
 } from "../types.js";
 
 // Lazy-import mongodb to avoid bundling issues when using D1.
@@ -20,6 +26,7 @@ type MongoClientType = import("mongodb").MongoClient;
 type ProductCollectionType = import("mongodb").Collection<MongoProductDoc>;
 type OrderCollectionType = import("mongodb").Collection<MongoOrderDoc>;
 type OrderItemCollectionType = import("mongodb").Collection<MongoOrderItemDoc>;
+type DiscountCollectionType = import("mongodb").Collection<MongoDiscountDoc>;
 
 type MongoProductDoc = Omit<Product, "id"> & { _id: string };
 
@@ -27,8 +34,9 @@ type MongoOrderItemDoc = Omit<OrderItem, "id"> & { _id: string };
 
 type MongoOrderDoc = Omit<Order, "id" | "items"> & {
   _id: string;
-  // items are stored in a separate collection; this field is populated at query time
 };
+
+type MongoDiscountDoc = Omit<Discount, "id"> & { _id: string };
 
 let _client: MongoClientType | null = null;
 
@@ -63,6 +71,11 @@ export class MongoDatabase implements Database {
   private async orderItemCol(): Promise<OrderItemCollectionType> {
     const client = await getClient(this.uri);
     return client.db(this.dbName).collection<MongoOrderItemDoc>("order_items");
+  }
+
+  private async discountCol(): Promise<DiscountCollectionType> {
+    const client = await getClient(this.uri);
+    return client.db(this.dbName).collection<MongoDiscountDoc>("discounts");
   }
 
   // ── Products ────────────────────────────────────────────────────────────────
@@ -197,6 +210,9 @@ export class MongoDatabase implements Database {
       label_url: null,
       amount_total: input.amount_total,
       currency: input.currency,
+      discount_id: input.discount_id ?? null,
+      discount_code: input.discount_code ?? null,
+      discount_amount: input.discount_amount ?? 0,
       metadata: input.metadata ?? {},
       notes: input.notes ?? "",
       created_at: now,
@@ -321,6 +337,124 @@ export class MongoDatabase implements Database {
     if (!result) return null;
     return this.getOrder(id);
   }
+
+  // ── Discounts ────────────────────────────────────────────────────────────────
+
+  async createDiscount(input: CreateDiscountInput): Promise<Discount> {
+    const col = await this.discountCol();
+    const now = new Date().toISOString();
+
+    const doc: MongoDiscountDoc = {
+      _id: randomUUID(),
+      code: input.code?.toUpperCase() ?? null,
+      name: input.name,
+      description: input.description ?? "",
+      type: input.type as DiscountType,
+      value: input.value,
+      applies_to: (input.applies_to ?? "all") as DiscountAppliesTo,
+      product_ids: input.product_ids ?? [],
+      minimum_order_amount: input.minimum_order_amount ?? 0,
+      usage_limit: input.usage_limit ?? null,
+      usage_count: 0,
+      active: input.active ?? true,
+      starts_at: input.starts_at ?? null,
+      ends_at: input.ends_at ?? null,
+      created_at: now,
+      updated_at: now,
+    };
+
+    await col.insertOne(doc);
+    return docToDiscount(doc);
+  }
+
+  async getDiscount(id: string): Promise<Discount | null> {
+    const col = await this.discountCol();
+    const doc = await col.findOne({ _id: id });
+    return doc ? docToDiscount(doc) : null;
+  }
+
+  async getDiscountByCode(code: string): Promise<Discount | null> {
+    const col = await this.discountCol();
+    const doc = await col.findOne({ code: code.toUpperCase() });
+    return doc ? docToDiscount(doc) : null;
+  }
+
+  async getDiscounts(options: DiscountQueryOptions = {}): Promise<Discount[]> {
+    const { limit = 50, offset = 0, active } = options;
+    const col = await this.discountCol();
+
+    const filter: Record<string, unknown> = {};
+    if (active !== undefined) filter.active = active;
+
+    const docs = await col
+      .find(filter)
+      .sort({ created_at: -1 })
+      .skip(offset)
+      .limit(limit)
+      .toArray();
+
+    return docs.map(docToDiscount);
+  }
+
+  async getActiveAutomaticDiscounts(): Promise<Discount[]> {
+    const col = await this.discountCol();
+    const now = new Date().toISOString();
+
+    const docs = await col
+      .find({
+        active: true,
+        code: null,
+        $and: [
+          { $or: [{ starts_at: null }, { starts_at: { $lte: now } }] },
+          { $or: [{ ends_at: null }, { ends_at: { $gt: now } }] },
+        ],
+      })
+      .toArray();
+
+    return docs.map(docToDiscount);
+  }
+
+  async updateDiscount(id: string, input: UpdateDiscountInput): Promise<Discount | null> {
+    const col = await this.discountCol();
+    const now = new Date().toISOString();
+
+    const set: Partial<MongoDiscountDoc> = {
+      ...(input.name !== undefined && { name: input.name }),
+      ...(input.description !== undefined && { description: input.description }),
+      ...(input.type !== undefined && { type: input.type }),
+      ...(input.value !== undefined && { value: input.value }),
+      ...(input.applies_to !== undefined && { applies_to: input.applies_to }),
+      ...(input.product_ids !== undefined && { product_ids: input.product_ids }),
+      ...(input.minimum_order_amount !== undefined && { minimum_order_amount: input.minimum_order_amount }),
+      ...(input.usage_limit !== undefined && { usage_limit: input.usage_limit }),
+      ...(input.active !== undefined && { active: input.active }),
+      ...(input.starts_at !== undefined && { starts_at: input.starts_at }),
+      ...(input.ends_at !== undefined && { ends_at: input.ends_at }),
+      updated_at: now,
+    };
+
+    const result = await col.findOneAndUpdate(
+      { _id: id },
+      { $set: set },
+      { returnDocument: "after" }
+    );
+
+    return result ? docToDiscount(result) : null;
+  }
+
+  async deleteDiscount(id: string): Promise<boolean> {
+    const col = await this.discountCol();
+    const result = await col.deleteOne({ _id: id });
+    return result.deletedCount > 0;
+  }
+
+  async incrementDiscountUsage(id: string): Promise<void> {
+    const col = await this.discountCol();
+    await col.updateOne(
+      { _id: id },
+      { $inc: { usage_count: 1 }, $set: { updated_at: new Date().toISOString() } }
+    );
+  }
 }
 
 // ─── Conversion helpers ───────────────────────────────────────────────────────
@@ -338,4 +472,9 @@ function docToOrderItem(doc: MongoOrderItemDoc): OrderItem {
 function docToOrder(doc: MongoOrderDoc, items: OrderItem[]): Order {
   const { _id, ...rest } = doc;
   return { id: _id, ...rest, items };
+}
+
+function docToDiscount(doc: MongoDiscountDoc): Discount {
+  const { _id, ...rest } = doc;
+  return { id: _id, ...rest };
 }

@@ -784,6 +784,223 @@ function formatPrice(price, currency) {
 
 ---
 
+## Discounts, Sales & Promotions
+
+Manage discount codes, time-limited sales, and product promotions.
+
+### Discount schema
+
+```json
+{
+  "id":                    "uuid",
+  "code":                  "SUMMER20",
+  "name":                  "Summer Sale 2024",
+  "description":           "20% off all orders",
+  "type":                  "percentage",
+  "value":                 20,
+  "applies_to":            "all",
+  "product_ids":           [],
+  "minimum_order_amount":  0,
+  "usage_limit":           500,
+  "usage_count":           37,
+  "active":                true,
+  "starts_at":             "2024-06-01T00:00:00Z",
+  "ends_at":               "2024-08-31T23:59:59Z",
+  "created_at":            "2024-05-20T10:00:00Z",
+  "updated_at":            "2024-06-01T00:00:00Z"
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `code` | string \| null | Null = automatic (no code required). String = customer must enter code. Always stored uppercase. |
+| `name` | string | Internal label — shown only in admin. |
+| `description` | string | Customer-facing description shown in the cart. |
+| `type` | string | `"percentage"` \| `"fixed_amount"` \| `"free_shipping"` |
+| `value` | integer | Percent (1–100) for `percentage`; smallest currency unit for `fixed_amount`; ignored for `free_shipping`. |
+| `applies_to` | string | `"all"` = entire order; `"products"` = only the listed `product_ids`. |
+| `product_ids` | string[] | Required when `applies_to = "products"`. |
+| `minimum_order_amount` | integer | Minimum cart subtotal before the discount applies. `0` = no minimum. |
+| `usage_limit` | integer \| null | Max redemptions. Null = unlimited. |
+| `usage_count` | integer | Auto-incremented on each confirmed payment. Read-only. |
+| `starts_at` | ISO 8601 \| null | Null = active immediately. |
+| `ends_at` | ISO 8601 \| null | Null = never expires. |
+
+---
+
+### List discounts
+
+```
+GET /admin/discounts
+```
+
+**Query params**
+
+| Param | Default | Notes |
+|---|---|---|
+| `limit` | `50` | Max `100` |
+| `offset` | `0` | |
+| `active` | — | `"true"` or `"false"` to filter |
+
+---
+
+### Get single discount
+
+```
+GET /admin/discounts/:id
+```
+
+---
+
+### Create discount / sale / promo
+
+```
+POST /admin/discounts
+```
+
+**Request body**
+
+```json
+{
+  "code":                  "WELCOME10",
+  "name":                  "New customer 10% off",
+  "description":           "10% off your first order",
+  "type":                  "percentage",
+  "value":                 10,
+  "applies_to":            "all",
+  "minimum_order_amount":  0,
+  "usage_limit":           null,
+  "active":                true,
+  "starts_at":             null,
+  "ends_at":               null
+}
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `name` | **Yes** | Internal label |
+| `type` | **Yes** | `percentage` \| `fixed_amount` \| `free_shipping` |
+| `value` | **Yes** | Percent 1–100 for `percentage`; cents for `fixed_amount`; `0` for `free_shipping` |
+| `code` | No | Omit or `null` for automatic discount; string for code-required |
+| `description` | No | Customer-facing text |
+| `applies_to` | No | `"all"` (default) or `"products"` |
+| `product_ids` | Required if `applies_to = "products"` | Array of product UUIDs |
+| `minimum_order_amount` | No | Default `0` |
+| `usage_limit` | No | `null` = unlimited |
+| `active` | No | Default `true` |
+| `starts_at` / `ends_at` | No | ISO 8601 datetime strings |
+
+**Response** — `201` with full Discount object.
+
+**Errors**
+
+| HTTP | `error` | |
+|---|---|---|
+| `409` | "Discount code '...' already exists" | Code must be unique |
+| `422` | Validation failed | Check `details.fieldErrors` |
+
+**Examples**
+
+```javascript
+// Site-wide percentage sale — no code needed, auto-expires
+await adminFetch('/admin/discounts', {
+  method: 'POST',
+  body: JSON.stringify({
+    name:        'Black Friday Sale',
+    description: '25% off everything',
+    type:        'percentage',
+    value:       25,
+    active:      true,
+    starts_at:   '2024-11-29T00:00:00Z',
+    ends_at:     '2024-11-30T23:59:59Z',
+  }),
+});
+
+// Fixed-amount code
+await adminFetch('/admin/discounts', {
+  method: 'POST',
+  body: JSON.stringify({
+    code:        'SAVE5',
+    name:        '$5 off any order',
+    description: 'Save $5 on your order',
+    type:        'fixed_amount',
+    value:       500,   // $5.00 in cents
+    usage_limit: 200,
+  }),
+});
+
+// Product-scoped promotion (no code)
+await adminFetch('/admin/discounts', {
+  method: 'POST',
+  body: JSON.stringify({
+    name:        'Tee Sale',
+    description: '15% off all tees',
+    type:        'percentage',
+    value:       15,
+    applies_to:  'products',
+    product_ids: ['uuid-tee-s', 'uuid-tee-m', 'uuid-tee-l'],
+    starts_at:   '2024-07-01T00:00:00Z',
+    ends_at:     '2024-07-07T23:59:59Z',
+  }),
+});
+
+// Free shipping code
+await adminFetch('/admin/discounts', {
+  method: 'POST',
+  body: JSON.stringify({
+    code:        'FREESHIP',
+    name:        'Free shipping promo',
+    description: 'Free shipping on your order',
+    type:        'free_shipping',
+    value:       0,
+  }),
+});
+```
+
+---
+
+### Update discount
+
+```
+PUT /admin/discounts/:id
+```
+
+Partial update. **`code` cannot be changed** after creation.
+
+```javascript
+// Deactivate a sale early
+await adminFetch(`/admin/discounts/${id}`, {
+  method: 'PUT',
+  body: JSON.stringify({ active: false }),
+});
+
+// Extend an expiry date
+await adminFetch(`/admin/discounts/${id}`, {
+  method: 'PUT',
+  body: JSON.stringify({ ends_at: '2024-09-30T23:59:59Z' }),
+});
+
+// Add a usage cap to an existing unlimited discount
+await adminFetch(`/admin/discounts/${id}`, {
+  method: 'PUT',
+  body: JSON.stringify({ usage_limit: 100 }),
+});
+```
+
+---
+
+### Delete discount
+
+```
+DELETE /admin/discounts/:id
+```
+
+**Response `data`:** `{ "deleted": true }`
+
+> Prefer deactivating (`PUT` with `{ "active": false }`) rather than deleting — orders that used the discount retain the reference.
+
+---
+
 ## Endpoints summary
 
 | Method | Path | Auth | Description |
@@ -801,3 +1018,8 @@ function formatPrice(price, currency) {
 | `PUT` | `/admin/orders/:id` | JWT | Update order (status, tracking, address, notes) |
 | `GET` | `/admin/orders/:id/rates` | JWT | Preview shipping rates (EasyPost) |
 | `POST` | `/admin/orders/:id/shipping-label` | JWT | Generate & purchase shipping label (EasyPost) |
+| `GET` | `/admin/discounts` | JWT | List all discounts / sales / promos |
+| `GET` | `/admin/discounts/:id` | JWT | Get single discount |
+| `POST` | `/admin/discounts` | JWT | Create discount / sale / promo → `201` |
+| `PUT` | `/admin/discounts/:id` | JWT | Update (cannot change code) |
+| `DELETE` | `/admin/discounts/:id` | JWT | Delete discount |

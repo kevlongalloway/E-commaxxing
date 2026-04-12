@@ -3,10 +3,12 @@
 **Base URL:** `https://<your-worker>.workers.dev`
 **Content-Type:** `application/json` on all requests with a body.
 
-> **Version 1.1 changes (frontend team — action required):**
-> - `POST /checkout/session` now collects a shipping address from the customer on the Stripe-hosted page. No frontend changes needed for this flow; Stripe handles it automatically.
-> - `POST /checkout/intent` accepts an optional `shippingAddress` body field for custom checkout UIs. See the [Payment Intent section](#payment-intent-custom-checkout-ui) for the new field.
-> - New public endpoint: `GET /orders/:id` — lets a logged-in customer look up their order status and tracking info after checkout.
+> **Version 1.2 changes (frontend team — action required):**
+> - Both checkout endpoints now accept an optional `discountCode` field — pass the code the customer typed in.
+> - New public endpoint: `POST /discounts/validate` — validate a code and preview savings before redirecting to checkout.
+> - Both checkout responses now include `discount_amount`, `original_amount`, `final_amount`, and `is_free_shipping` fields.
+> - New public endpoint: `GET /orders?session_id=` — lets customers look up their order status and tracking info after checkout.
+> - `POST /checkout/session` now collects shipping address automatically via Stripe. `POST /checkout/intent` accepts optional `shippingAddress` field.
 
 ---
 
@@ -354,6 +356,220 @@ function stockBadge(stock) {
   if (stock === 0)              return 'Sold out';
   if (stock > 0 && stock <= 4) return `Only ${stock} left`;
   return null;  // no badge needed
+}
+```
+
+---
+
+## Discounts, Sales & Promotions
+
+The API supports three kinds of discounts:
+
+| Kind | How it works | When to use |
+|---|---|---|
+| **Discount code** | Customer types a code (e.g. `SUMMER20`). Pass `discountCode` in the checkout body. | Coupon campaigns, influencer codes |
+| **Automatic sale** | Applied without a code — triggered by a date range. | Site-wide or product sales |
+| **Automatic promotion** | Same as a sale but scoped to specific products. | Category or product promotions |
+
+---
+
+### Validate a discount code
+
+```
+POST /discounts/validate
+```
+
+Call this when the customer clicks "Apply" on a discount code field, **before** they go to checkout. Shows the savings amount so you can update the cart total in real time.
+
+Also returns any currently active automatic discounts (sales/promotions) with no code required — useful for showing sale banners on the cart page.
+
+**Request body**
+
+```json
+{
+  "code": "SUMMER20",
+  "items": [
+    { "productId": "550e8400-...", "price": 2999, "quantity": 2 }
+  ]
+}
+```
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `code` | string | No | Discount code entered by the customer. Omit to check automatic discounts only. |
+| `items` | array | Yes | Cart items with `productId`, `price` (unit price integer), and `quantity` |
+
+> The `price` in items should match `product.price` from the catalog — do not format or convert it.
+
+**Response `data`** — valid code
+
+```json
+{
+  "valid":            true,
+  "discount": {
+    "id":                   "uuid",
+    "code":                 "SUMMER20",
+    "name":                 "Summer Sale 2024",
+    "description":          "20% off all orders",
+    "type":                 "percentage",
+    "value":                20,
+    "ends_at":              "2024-08-31T23:59:59Z",
+    "minimum_order_amount": 0,
+    "discount_amount":      1200
+  },
+  "discount_amount":  1200,
+  "original_amount":  5998,
+  "final_amount":     4798,
+  "is_free_shipping": false,
+  "automatic_discounts": []
+}
+```
+
+**Response `data`** — invalid code
+
+```json
+{
+  "valid":            false,
+  "error":            "This discount has expired",
+  "discount":         null,
+  "discount_amount":  0,
+  "original_amount":  5998,
+  "final_amount":     5998,
+  "automatic_discounts": []
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `valid` | boolean | Whether the code is valid and applies to this cart |
+| `error` | string | Human-readable reason when `valid: false` |
+| `discount_amount` | integer | Amount saved in smallest currency unit |
+| `original_amount` | integer | Cart subtotal before discount |
+| `final_amount` | integer | Amount customer will be charged |
+| `is_free_shipping` | boolean | Whether the discount grants free shipping |
+| `automatic_discounts` | array | Active sales/promotions that apply without a code |
+
+**Error cases**
+
+| HTTP | `error` | Meaning |
+|---|---|---|
+| `400` | "Body must include `items` array..." | Missing or invalid items |
+
+---
+
+### Applying a discount at checkout
+
+Pass `discountCode` in the body of either checkout endpoint. If no code is provided, active automatic discounts (sales/promos) are applied automatically.
+
+**Stripe hosted checkout (`/checkout/session`)**
+
+```javascript
+const res = await fetch('/checkout/session', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    items: [{ productId: '550e8400-...', quantity: 2 }],
+    successUrl: 'https://myshop.com/success?session_id={CHECKOUT_SESSION_ID}',
+    cancelUrl:  'https://myshop.com/cart',
+    discountCode: 'SUMMER20',   // ← add this
+  }),
+});
+const { data } = await res.json();
+// data.discount_amount  → e.g. 1200  ($12.00 saved)
+// data.original_amount  → e.g. 5998
+// data.final_amount     → e.g. 4798
+window.location.href = data.url;
+```
+
+**Custom checkout (`/checkout/intent`)**
+
+```javascript
+const res = await fetch('/checkout/intent', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    items: [{ productId: '550e8400-...', quantity: 2 }],
+    discountCode:    'SUMMER20',
+    shippingAddress: { ... },
+  }),
+});
+const { data } = await res.json();
+// data.amount now reflects the discounted total
+// data.discount_amount, original_amount, final_amount are also returned
+```
+
+If the code is invalid or doesn't apply, the endpoint returns a `400` error — validate with `/discounts/validate` first for a better UX.
+
+---
+
+### Recommended discount UX flow
+
+```javascript
+let appliedDiscount = null;
+
+async function applyCode(code) {
+  const res = await fetch('/discounts/validate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code, items: cartItems }),
+  });
+  const { data } = await res.json();
+
+  if (!data.valid) {
+    showError(data.error);   // e.g. "This discount has expired"
+    return;
+  }
+
+  appliedDiscount = data;
+  updateCartUI({
+    original:  formatPrice(data.original_amount, currency),
+    discount:  `-${formatPrice(data.discount_amount, currency)}`,
+    total:     formatPrice(data.final_amount, currency),
+    badge:     data.discount.description,  // e.g. "20% off all orders"
+    shipping:  data.is_free_shipping ? 'FREE' : null,
+  });
+}
+
+async function proceedToCheckout() {
+  const res = await fetch('/checkout/session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      items: cartItems,
+      successUrl: 'https://myshop.com/success?session_id={CHECKOUT_SESSION_ID}',
+      cancelUrl:  'https://myshop.com/cart',
+      discountCode: appliedDiscount?.discount.code ?? undefined,
+    }),
+  });
+  const { data } = await res.json();
+  window.location.href = data.url;
+}
+```
+
+---
+
+### Showing automatic sales on the product page
+
+Call `/discounts/validate` with your cart items (omit `code`) to find any active sales:
+
+```javascript
+async function getActiveSales(productId, price) {
+  const res = await fetch('/discounts/validate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      items: [{ productId, price, quantity: 1 }],
+    }),
+  });
+  const { data } = await res.json();
+  return data.automatic_discounts;
+}
+
+// Show a "SUMMER SALE — 20% OFF" badge on the product card
+const sales = await getActiveSales(product.id, product.price);
+if (sales.length > 0) {
+  showSaleBadge(sales[0].description);
+  showSalePrice(formatPrice(product.price - sales[0].discount_amount, product.currency));
 }
 ```
 
@@ -739,6 +955,7 @@ function getPrimaryImage(product, fallback = '/placeholder.png') {
 |---|---|---|---|
 | `GET` | `/products` | — | List active products |
 | `GET` | `/products/:id` | — | Single product |
-| `POST` | `/checkout/session` | — | Stripe hosted checkout → get redirect URL |
-| `POST` | `/checkout/intent` | — | Stripe Payment Intent → get `clientSecret` |
-| `GET` | `/orders?session_id=` | — | Look up order by Stripe session ID (post-checkout) |
+| `POST` | `/checkout/session` | — | Stripe hosted checkout → get redirect URL (supports `discountCode`) |
+| `POST` | `/checkout/intent` | — | Stripe Payment Intent → get `clientSecret` (supports `discountCode`) |
+| `POST` | `/discounts/validate` | — | Validate a discount code or preview automatic discounts |
+| `GET` | `/orders?session_id=` | — | Look up order status and tracking by Stripe session ID |

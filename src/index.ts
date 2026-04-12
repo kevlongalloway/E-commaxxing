@@ -14,6 +14,8 @@ import images from "./routes/images.js";
 import { orders } from "./routes/orders.js";
 import { shipping } from "./routes/shipping.js";
 import { orderStatus } from "./routes/orderStatus.js";
+import { discounts } from "./routes/discounts.js";
+import { discountValidate } from "./routes/discountValidate.js";
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -59,6 +61,9 @@ app.route("/webhooks", webhooks);
 // Public order status lookup (customer-facing, secured by unguessable session_id)
 app.route("/orders", orderStatus);
 
+// Public discount validation (customer enters code before checkout)
+app.route("/discounts", discountValidate);
+
 // ─── Admin Routes ─────────────────────────────────────────────────────────────
 
 // Login is public — no auth required.
@@ -77,6 +82,9 @@ app.route("/admin/images", images);
 
 // Order management (admin only — protected by the middleware above)
 app.route("/admin/orders", orders);
+
+// Discount / promo / sale management (admin only)
+app.route("/admin/discounts", discounts);
 
 // Shipping label generation per order (admin only)
 app.route("/admin/orders", shipping);

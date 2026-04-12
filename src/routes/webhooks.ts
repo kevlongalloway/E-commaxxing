@@ -177,6 +177,11 @@ async function handleCheckoutSessionCompleted(
   const shipping = session.shipping_details;
   const customer = session.customer_details;
 
+  // Extract discount info stored in session metadata by /checkout/session.
+  const discountId     = session.metadata?.discount_id || null;
+  const discountCode   = session.metadata?.discount_code || null;
+  const discountAmount = parseInt(session.metadata?.discount_amount ?? "0", 10) || 0;
+
   const order = await db.createOrder({
     stripe_session_id: session.id,
     stripe_payment_intent_id: session.payment_intent as string | null ?? null,
@@ -193,8 +198,18 @@ async function handleCheckoutSessionCompleted(
     shipping_phone: customer?.phone ?? null,
     amount_total: session.amount_total ?? 0,
     currency: session.currency ?? "usd",
+    discount_id: discountId,
+    discount_code: discountCode,
+    discount_amount: discountAmount,
     items,
   });
+
+  // Increment the discount usage counter now that payment is confirmed.
+  if (discountId) {
+    await db.incrementDiscountUsage(discountId).catch((e) =>
+      console.error(`Failed to increment discount usage for ${discountId}:`, e)
+    );
+  }
 
   console.log(`Created order ${order.id} for session ${session.id} — status: paid`);
 }
@@ -263,6 +278,10 @@ async function handlePaymentIntentSucceeded(
   // shipping_details may be set if the Payment Intent was created with shipping.
   const shipping = intent.shipping;
 
+  const discountId     = intent.metadata?.discount_id || null;
+  const discountCode   = intent.metadata?.discount_code || null;
+  const discountAmount = parseInt(intent.metadata?.discount_amount ?? "0", 10) || 0;
+
   const order = await db.createOrder({
     stripe_payment_intent_id: intent.id,
     status: "paid",
@@ -276,8 +295,17 @@ async function handlePaymentIntentSucceeded(
     shipping_phone: shipping?.phone ?? null,
     amount_total: intent.amount,
     currency: intent.currency ?? "usd",
+    discount_id: discountId,
+    discount_code: discountCode,
+    discount_amount: discountAmount,
     items,
   });
+
+  if (discountId) {
+    await db.incrementDiscountUsage(discountId).catch((e) =>
+      console.error(`Failed to increment discount usage for ${discountId}:`, e)
+    );
+  }
 
   console.log(`Created order ${order.id} for intent ${intent.id} — status: paid`);
 }

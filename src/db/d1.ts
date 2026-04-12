@@ -12,6 +12,12 @@ import type {
   OrderQueryOptions,
   OrderStatus,
   FulfillmentStatus,
+  Discount,
+  CreateDiscountInput,
+  UpdateDiscountInput,
+  DiscountQueryOptions,
+  DiscountType,
+  DiscountAppliesTo,
 } from "../types.js";
 
 // ─── Product row shape from D1 ────────────────────────────────────────────────
@@ -65,8 +71,30 @@ type OrderRow = {
   label_url: string | null;
   amount_total: number;
   currency: string;
+  discount_id: string | null;
+  discount_code: string | null;
+  discount_amount: number;
   metadata: string;  // JSON string
   notes: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type DiscountRow = {
+  id: string;
+  code: string | null;
+  name: string;
+  description: string;
+  type: string;
+  value: number;
+  applies_to: string;
+  product_ids: string;  // JSON string
+  minimum_order_amount: number;
+  usage_limit: number | null;
+  usage_count: number;
+  active: number;       // 0 | 1
+  starts_at: string | null;
+  ends_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -86,8 +114,19 @@ function rowToOrder(row: OrderRow, items: OrderItemRow[]): Order {
     ...row,
     status: row.status as OrderStatus,
     fulfillment_status: row.fulfillment_status as FulfillmentStatus,
+    discount_amount: row.discount_amount ?? 0,
     metadata: JSON.parse(row.metadata) as Record<string, unknown>,
     items: items.map((i) => ({ ...i })),
+  };
+}
+
+function rowToDiscount(row: DiscountRow): Discount {
+  return {
+    ...row,
+    type: row.type as DiscountType,
+    applies_to: row.applies_to as DiscountAppliesTo,
+    product_ids: JSON.parse(row.product_ids) as string[],
+    active: row.active === 1,
   };
 }
 
@@ -248,10 +287,12 @@ export class D1Database implements Database {
             shipping_city, shipping_state, shipping_postal_code, shipping_country,
             shipping_phone, shipping_carrier, shipping_service,
             tracking_number, label_url,
-            amount_total, currency, metadata, notes, created_at, updated_at)
+            amount_total, currency,
+            discount_id, discount_code, discount_amount,
+            metadata, notes, created_at, updated_at)
          VALUES
            (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)`
+            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)`
       )
       .bind(
         id,
@@ -275,6 +316,9 @@ export class D1Database implements Database {
         null, // label_url
         input.amount_total,
         input.currency,
+        input.discount_id ?? null,
+        input.discount_code ?? null,
+        input.discount_amount ?? 0,
         JSON.stringify(input.metadata ?? {}),
         input.notes ?? "",
         now,
@@ -318,6 +362,9 @@ export class D1Database implements Database {
       label_url: null,
       amount_total: input.amount_total,
       currency: input.currency,
+      discount_id: input.discount_id ?? null,
+      discount_code: input.discount_code ?? null,
+      discount_amount: input.discount_amount ?? 0,
       metadata: JSON.stringify(input.metadata ?? {}),
       notes: input.notes ?? "",
       created_at: now,
@@ -468,6 +515,145 @@ export class D1Database implements Database {
       .run();
 
     return this.getOrder(id);
+  }
+
+  // ── Discounts ────────────────────────────────────────────────────────────────
+
+  async createDiscount(input: CreateDiscountInput): Promise<Discount> {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+
+    await this.db
+      .prepare(
+        `INSERT INTO discounts
+           (id, code, name, description, type, value, applies_to, product_ids,
+            minimum_order_amount, usage_limit, usage_count, active,
+            starts_at, ends_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)`
+      )
+      .bind(
+        id,
+        input.code?.toUpperCase() ?? null,
+        input.name,
+        input.description ?? "",
+        input.type,
+        input.value,
+        input.applies_to ?? "all",
+        JSON.stringify(input.product_ids ?? []),
+        input.minimum_order_amount ?? 0,
+        input.usage_limit ?? null,
+        0,
+        (input.active ?? true) ? 1 : 0,
+        input.starts_at ?? null,
+        input.ends_at ?? null,
+        now,
+        now
+      )
+      .run();
+
+    return (await this.getDiscount(id))!;
+  }
+
+  async getDiscount(id: string): Promise<Discount | null> {
+    const row = await this.db
+      .prepare("SELECT * FROM discounts WHERE id = ?1")
+      .bind(id)
+      .first<DiscountRow>();
+    return row ? rowToDiscount(row) : null;
+  }
+
+  async getDiscountByCode(code: string): Promise<Discount | null> {
+    const row = await this.db
+      .prepare("SELECT * FROM discounts WHERE code = ?1")
+      .bind(code.toUpperCase())
+      .first<DiscountRow>();
+    return row ? rowToDiscount(row) : null;
+  }
+
+  async getDiscounts(options: DiscountQueryOptions = {}): Promise<Discount[]> {
+    const { limit = 50, offset = 0, active } = options;
+
+    let query = "SELECT * FROM discounts";
+    const bindings: unknown[] = [];
+
+    if (active !== undefined) {
+      query += ` WHERE active = ?${bindings.length + 1}`;
+      bindings.push(active ? 1 : 0);
+    }
+
+    query += ` ORDER BY created_at DESC LIMIT ?${bindings.length + 1} OFFSET ?${bindings.length + 2}`;
+    bindings.push(limit, offset);
+
+    const { results } = await this.db
+      .prepare(query)
+      .bind(...bindings)
+      .all<DiscountRow>();
+
+    return (results ?? []).map(rowToDiscount);
+  }
+
+  async getActiveAutomaticDiscounts(): Promise<Discount[]> {
+    const now = new Date().toISOString();
+    const { results } = await this.db
+      .prepare(
+        `SELECT * FROM discounts
+         WHERE active = 1
+           AND code IS NULL
+           AND (starts_at IS NULL OR starts_at <= ?1)
+           AND (ends_at IS NULL OR ends_at > ?1)`
+      )
+      .bind(now)
+      .all<DiscountRow>();
+    return (results ?? []).map(rowToDiscount);
+  }
+
+  async updateDiscount(id: string, input: UpdateDiscountInput): Promise<Discount | null> {
+    const existing = await this.getDiscount(id);
+    if (!existing) return null;
+
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(
+        `UPDATE discounts SET
+           name = ?1, description = ?2, type = ?3, value = ?4,
+           applies_to = ?5, product_ids = ?6,
+           minimum_order_amount = ?7, usage_limit = ?8,
+           active = ?9, starts_at = ?10, ends_at = ?11, updated_at = ?12
+         WHERE id = ?13`
+      )
+      .bind(
+        input.name ?? existing.name,
+        input.description !== undefined ? input.description : existing.description,
+        input.type ?? existing.type,
+        input.value !== undefined ? input.value : existing.value,
+        input.applies_to ?? existing.applies_to,
+        JSON.stringify(input.product_ids ?? existing.product_ids),
+        input.minimum_order_amount !== undefined ? input.minimum_order_amount : existing.minimum_order_amount,
+        input.usage_limit !== undefined ? input.usage_limit : existing.usage_limit,
+        (input.active !== undefined ? input.active : existing.active) ? 1 : 0,
+        input.starts_at !== undefined ? input.starts_at : existing.starts_at,
+        input.ends_at !== undefined ? input.ends_at : existing.ends_at,
+        now,
+        id
+      )
+      .run();
+
+    return this.getDiscount(id);
+  }
+
+  async deleteDiscount(id: string): Promise<boolean> {
+    const { meta } = await this.db
+      .prepare("DELETE FROM discounts WHERE id = ?1")
+      .bind(id)
+      .run();
+    return (meta.changes ?? 0) > 0;
+  }
+
+  async incrementDiscountUsage(id: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE discounts SET usage_count = usage_count + 1, updated_at = ?1 WHERE id = ?2")
+      .bind(new Date().toISOString(), id)
+      .run();
   }
 }
 
