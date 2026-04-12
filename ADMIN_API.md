@@ -117,7 +117,9 @@ Identical to the public API.
 
 ---
 
-## Product Schema
+## Products
+
+### Product Schema
 
 Admins see all fields including inactive products.
 
@@ -157,16 +159,13 @@ Admins see all fields including inactive products.
 
 ---
 
-## Endpoints
-
 ### List all products
 
 ```
 GET /admin/products
 ```
 
-Returns all products — including **inactive** ones. Use this for the main
-product table in the portal.
+Returns all products — including **inactive** ones.
 
 **Query params**
 
@@ -178,15 +177,6 @@ product table in the portal.
 
 **Response `data`** — array of Product objects, newest first.
 
-**Example**
-```javascript
-// Page 1 of all products (including drafts)
-const products = await adminFetch('/admin/products?limit=50&offset=0');
-
-// Only active products
-const active = await adminFetch('/admin/products?active_only=true');
-```
-
 ---
 
 ### Get single product
@@ -195,20 +185,7 @@ const active = await adminFetch('/admin/products?active_only=true');
 GET /admin/products/:id
 ```
 
-Returns a product by its UUID, including if it is inactive.
-
 **Response `data`** — single Product object.
-
-**Example**
-```javascript
-const product = await adminFetch('/admin/products/550e8400-e29b-41d4-a716-446655440000');
-```
-
-**Errors**
-
-| HTTP | Meaning |
-|---|---|
-| `404` | No product with that ID |
 
 ---
 
@@ -244,41 +221,7 @@ POST /admin/products
 | `stock` | No | integer | `-1` or any positive integer | `-1` (unlimited) |
 | `active` | No | boolean | | `true` |
 
-**Response** — `201 Created` with the full Product object including its new `id`.
-
-**Example**
-```javascript
-const newProduct = await adminFetch('/admin/products', {
-  method: 'POST',
-  body: JSON.stringify({
-    name:  'Widget Pro',
-    price: 2999,
-    stock: 50,
-  }),
-});
-console.log(newProduct.id); // UUID assigned by server
-```
-
-**Errors**
-
-| HTTP | `error` | Meaning |
-|---|---|---|
-| `422` | `"Validation failed"` | One or more fields failed validation. Check `details.fieldErrors`. |
-
-**Validation error shape**
-```json
-{
-  "ok": false,
-  "error": "Validation failed",
-  "details": {
-    "fieldErrors": {
-      "price": ["Price must be an integer (smallest currency unit, e.g. cents)"],
-      "name":  ["String must contain at least 1 character(s)"]
-    },
-    "formErrors": []
-  }
-}
-```
+**Response** — `201 Created` with the full Product object.
 
 ---
 
@@ -288,8 +231,7 @@ console.log(newProduct.id); // UUID assigned by server
 PUT /admin/products/:id
 ```
 
-Partial update — only the fields you include are changed. Fields you omit
-are left exactly as they are.
+Partial update — only the fields you include are changed.
 
 **Request body** — same fields as create, all optional.
 
@@ -299,40 +241,6 @@ are left exactly as they are.
 
 **Response `data`** — the full updated Product object.
 
-**Example**
-```javascript
-// Reduce price
-const updated = await adminFetch(`/admin/products/${id}`, {
-  method: 'PUT',
-  body: JSON.stringify({ price: 1999 }),
-});
-
-// Hide from public without deleting
-await adminFetch(`/admin/products/${id}`, {
-  method: 'PUT',
-  body: JSON.stringify({ active: false }),
-});
-
-// Mark as sold out
-await adminFetch(`/admin/products/${id}`, {
-  method: 'PUT',
-  body: JSON.stringify({ stock: 0 }),
-});
-
-// Restore and restock
-await adminFetch(`/admin/products/${id}`, {
-  method: 'PUT',
-  body: JSON.stringify({ active: true, stock: 50 }),
-});
-```
-
-**Errors**
-
-| HTTP | Meaning |
-|---|---|
-| `404` | No product with that ID |
-| `422` | Validation failed (same shape as create) |
-
 ---
 
 ### Delete product
@@ -341,38 +249,16 @@ await adminFetch(`/admin/products/${id}`, {
 DELETE /admin/products/:id
 ```
 
-**Permanently** removes the product from the database. This cannot be undone.
-
-> **Prefer `PUT` with `{ "active": false }` for most cases.** Soft-deleting
-> (deactivating) keeps the product ID stable so past checkout references don't
-> break. Hard delete when you are certain the product is unused.
+**Permanently** removes the product. Prefer `PUT` with `{ "active": false }` to soft-delete.
 
 **Response `data`**
 ```json
 { "deleted": true }
 ```
 
-**Example**
-```javascript
-await adminFetch(`/admin/products/${id}`, { method: 'DELETE' });
-```
-
-**Errors**
-
-| HTTP | Meaning |
-|---|---|
-| `404` | No product with that ID (already deleted or wrong ID) |
-
 ---
 
 ## Image Uploads
-
-Images are stored in Cloudflare R2. Upload an image first to get a URL, then
-pass that URL in the `images` array when creating or updating a product.
-
-> **Requires R2 to be configured.** See `wrangler.toml` for setup instructions.
-
----
 
 ### Upload image
 
@@ -380,9 +266,8 @@ pass that URL in the `images` array when creating or updating a product.
 POST /admin/images/upload
 ```
 
-Accepts a `multipart/form-data` request with a single `file` field.
-
-**Allowed file types:** `image/jpeg`, `image/png`, `image/webp`, `image/gif`
+Accepts `multipart/form-data` with a single `file` field.
+**Allowed types:** `image/jpeg`, `image/png`, `image/webp`, `image/gif`
 
 **Response `data`**
 ```json
@@ -392,81 +277,415 @@ Accepts a `multipart/form-data` request with a single `file` field.
 }
 ```
 
-| Field | Description |
-|---|---|
-| `url` | Fully-qualified public URL — pass this directly into a product's `images` array |
-| `key` | R2 object key — use this if you need to delete the image later |
-
-**Example**
-```javascript
-async function uploadImage(file) {
-  const form = new FormData();
-  form.append('file', file);
-
-  const res = await fetch(`${API_BASE}/admin/images/upload`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${process.env.ADMIN_API_KEY}` },
-    body: form,
-    // Do NOT set Content-Type manually — the browser sets it with the boundary
-  });
-
-  const body = await res.json();
-  if (!body.ok) throw new Error(body.error);
-  return body.data; // { url, key }
-}
-
-// Upload then attach to a product
-const { url } = await uploadImage(fileInput.files[0]);
-await adminFetch(`/admin/products/${productId}`, {
-  method: 'PUT',
-  body: JSON.stringify({ images: [url] }),
-});
-```
-
-**Errors**
-
-| HTTP | `error` | Meaning |
-|---|---|---|
-| `400` | `"Missing \"file\" field"` | No file included in the form |
-| `400` | `"Invalid file type ..."` | File type not allowed |
-| `400` | `"Request must be multipart/form-data"` | Wrong content type |
-| `500` | `"R2 bucket not configured"` | `IMAGES` binding missing — check wrangler.toml |
-
-> **Images replace, not append.** The `images` field on a product is always the
-> complete array. To add an image without losing existing ones, fetch the product
-> first, append the new URL, then `PUT` the full array back:
-> ```javascript
-> const product = await adminFetch(`/admin/products/${productId}`);
-> const { url }  = await uploadImage(file);
-> await adminFetch(`/admin/products/${productId}`, {
->   method: 'PUT',
->   body: JSON.stringify({ images: [...product.images, url] }),
-> });
-> ```
-> To remove one image, filter it out of the array and `PUT` the remainder.
-
----
-
 ### Delete image
 
 ```
 DELETE /admin/images/:key
 ```
 
-Deletes an image from R2 by its key (returned from the upload endpoint).
-
 **Response `data`**
 ```json
 { "deleted": "550e8400-e29b-41d4-a716-446655440000.jpg" }
 ```
 
-**Example**
-```javascript
-await adminFetch(`/admin/images/${key}`, { method: 'DELETE' });
+---
+
+## Orders
+
+Orders are created automatically when Stripe confirms a payment. They track the
+full lifecycle from payment to delivery.
+
+### Order Schema
+
+```json
+{
+  "id":                       "a1b2c3d4-e5f6-...",
+  "stripe_session_id":        "cs_test_...",
+  "stripe_payment_intent_id": "pi_...",
+  "status":                   "paid",
+  "fulfillment_status":       "processing",
+  "customer_email":           "jane@example.com",
+  "customer_name":            "Jane Smith",
+  "shipping_name":            "Jane Smith",
+  "shipping_address_line1":   "123 Main St",
+  "shipping_address_line2":   "Apt 4B",
+  "shipping_city":            "Brooklyn",
+  "shipping_state":           "NY",
+  "shipping_postal_code":     "11201",
+  "shipping_country":         "US",
+  "shipping_phone":           "+1-555-555-0100",
+  "shipping_carrier":         "USPS",
+  "shipping_service":         "Priority Mail",
+  "tracking_number":          "9400111899223397988011",
+  "label_url":                "https://easypost-files.s3.amazonaws.com/files/postage_label/...",
+  "amount_total":             5998,
+  "currency":                 "usd",
+  "metadata":                 {},
+  "notes":                    "Fragile — pack carefully",
+  "items": [
+    {
+      "id":           "item-uuid",
+      "order_id":     "a1b2c3d4-...",
+      "product_id":   "550e8400-...",
+      "product_name": "Widget Pro",
+      "price":        2999,
+      "quantity":     2,
+      "currency":     "usd"
+    }
+  ],
+  "created_at": "2024-01-15T10:30:00.000Z",
+  "updated_at": "2024-01-15T12:00:00.000Z"
+}
 ```
 
-> **Note:** Deleting an image from R2 does not remove its URL from any products.
-> Update or delete the product separately if needed.
+#### `status` values
+
+| Value | Meaning |
+|---|---|
+| `"pending"` | Payment initiated, not yet confirmed by Stripe |
+| `"paid"` | Payment confirmed — order ready to fulfill |
+| `"fulfilled"` | All items shipped |
+| `"cancelled"` | Payment failed or order voided |
+
+#### `fulfillment_status` values
+
+| Value | Meaning |
+|---|---|
+| `"unfulfilled"` | Paid, nothing shipped yet |
+| `"processing"` | Shipping label generated, packing |
+| `"shipped"` | In transit — tracking number assigned |
+| `"delivered"` | Carrier confirmed delivery |
+
+---
+
+### List orders
+
+```
+GET /admin/orders
+```
+
+**Query params**
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `limit` | integer | `50` | Max `100` |
+| `offset` | integer | `0` | Pagination offset |
+| `status` | string | — | Filter: `pending` \| `paid` \| `fulfilled` \| `cancelled` |
+| `fulfillment_status` | string | — | Filter: `unfulfilled` \| `processing` \| `shipped` \| `delivered` |
+
+**Response `data`** — array of Order objects, newest first.
+
+**Examples**
+```javascript
+// All orders
+const all = await adminFetch('/admin/orders');
+
+// Only paid, unfulfilled orders (ready to ship)
+const toShip = await adminFetch('/admin/orders?status=paid&fulfillment_status=unfulfilled');
+
+// Recently fulfilled
+const shipped = await adminFetch('/admin/orders?fulfillment_status=shipped');
+```
+
+---
+
+### Get single order
+
+```
+GET /admin/orders/:id
+```
+
+Returns the full order including all line items.
+
+**Response `data`** — single Order object.
+
+**Errors**
+
+| HTTP | Meaning |
+|---|---|
+| `404` | Order not found |
+
+---
+
+### Update order
+
+```
+PUT /admin/orders/:id
+```
+
+Partial update — only included fields are changed. Use this to:
+- Advance the order status
+- Add/correct tracking information manually
+- Add internal notes
+- Correct a shipping address before generating a label
+
+**Request body** (all fields optional)
+
+```json
+{
+  "status":                 "fulfilled",
+  "fulfillment_status":     "shipped",
+  "tracking_number":        "9400111899223397988011",
+  "shipping_carrier":       "USPS",
+  "shipping_service":       "Priority Mail",
+  "notes":                  "Packed 2025-01-16. Fragile.",
+  "shipping_address_line1": "456 New Ave"
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `status` | string | `pending` \| `paid` \| `fulfilled` \| `cancelled` |
+| `fulfillment_status` | string | `unfulfilled` \| `processing` \| `shipped` \| `delivered` |
+| `customer_email` | string \| null | |
+| `customer_name` | string \| null | |
+| `shipping_name` | string \| null | |
+| `shipping_address_line1` | string \| null | |
+| `shipping_address_line2` | string \| null | |
+| `shipping_city` | string \| null | |
+| `shipping_state` | string \| null | |
+| `shipping_postal_code` | string \| null | |
+| `shipping_country` | string \| null | 2-char ISO code |
+| `shipping_phone` | string \| null | |
+| `shipping_carrier` | string \| null | e.g. `"USPS"`, `"UPS"`, `"FedEx"` |
+| `shipping_service` | string \| null | e.g. `"Priority Mail"` |
+| `tracking_number` | string \| null | |
+| `label_url` | string \| null | URL to pre-existing label |
+| `notes` | string | Internal admin notes (not shown to customer) |
+| `metadata` | object | Arbitrary key/value pairs |
+
+**Response `data`** — the full updated Order object.
+
+**Examples**
+```javascript
+// Mark as shipped after adding tracking manually
+await adminFetch(`/admin/orders/${id}`, {
+  method: 'PUT',
+  body: JSON.stringify({
+    fulfillment_status: 'shipped',
+    tracking_number:    '9400111899223397988011',
+    shipping_carrier:   'USPS',
+  }),
+});
+
+// Mark fully fulfilled
+await adminFetch(`/admin/orders/${id}`, {
+  method: 'PUT',
+  body: JSON.stringify({ status: 'fulfilled', fulfillment_status: 'delivered' }),
+});
+
+// Cancel a problematic order
+await adminFetch(`/admin/orders/${id}`, {
+  method: 'PUT',
+  body: JSON.stringify({ status: 'cancelled', notes: 'Customer requested cancellation' }),
+});
+```
+
+---
+
+## Shipping Labels
+
+Shipping labels are generated via **EasyPost** (https://www.easypost.com).
+A free EasyPost account provides real USPS/UPS/FedEx labels.
+
+**Setup:**
+1. Create a free account at https://www.easypost.com
+2. Copy your API key from the EasyPost dashboard
+3. Run: `wrangler secret put EASYPOST_API_KEY`
+4. Set your store's from-address in `wrangler.toml` (see `STORE_*` variables)
+5. Apply the migration: `npm run db:migrate`
+
+Without `EASYPOST_API_KEY`, you can still manually enter tracking numbers
+via `PUT /admin/orders/:id`.
+
+---
+
+### Preview shipping rates
+
+```
+GET /admin/orders/:id/rates
+```
+
+Fetches available rates for an order without purchasing a label.
+Use this to show rate options in the UI before committing.
+
+**Query params**
+
+| Param | Type | Required | Notes |
+|---|---|---|---|
+| `weight` | number | **Yes** | Package weight in **ounces** |
+| `length` | number | No | Package length in inches |
+| `width` | number | No | Package width in inches |
+| `height` | number | No | Package height in inches |
+
+**Response `data`**
+```json
+{
+  "rates": [
+    {
+      "id":            "rate_abc123",
+      "carrier":       "USPS",
+      "service":       "Priority Mail",
+      "rate":          "7.90",
+      "currency":      "USD",
+      "delivery_days": 2
+    },
+    {
+      "id":            "rate_def456",
+      "carrier":       "USPS",
+      "service":       "First-Class Package Service",
+      "rate":          "4.50",
+      "currency":      "USD",
+      "delivery_days": 3
+    }
+  ]
+}
+```
+
+Rates are sorted cheapest first.
+
+**Errors**
+
+| HTTP | `error` | Meaning |
+|---|---|---|
+| `400` | "Query param `weight` is required..." | Missing weight |
+| `400` | "Order is missing a complete shipping address" | Fill in the address first |
+| `404` | "Order not found" | |
+| `503` | "Shipping not configured..." | EASYPOST_API_KEY not set |
+
+**Example**
+```javascript
+// Preview rates for a 12-oz box (6×4×3 inches)
+const { rates } = await adminFetch(
+  `/admin/orders/${id}/rates?weight=12&length=6&width=4&height=3`
+);
+// Show rate options in the UI, then call POST .../shipping-label with carrier/service
+```
+
+---
+
+### Generate shipping label
+
+```
+POST /admin/orders/:id/shipping-label
+```
+
+Generates and purchases a shipping label via EasyPost.
+On success, the order is automatically updated with:
+- `tracking_number`
+- `label_url` (printable PDF)
+- `shipping_carrier` and `shipping_service`
+- `fulfillment_status` → `"processing"`
+
+**Request body**
+
+```json
+{
+  "parcel": {
+    "weight": 12,
+    "length": 6,
+    "width":  4,
+    "height": 3
+  },
+  "carrier": "USPS",
+  "service": "Priority Mail"
+}
+```
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `parcel` | object | **Yes** | Package dimensions |
+| `parcel.weight` | number | **Yes** | Weight in **ounces** |
+| `parcel.length` | number | No | Length in inches |
+| `parcel.width` | number | No | Width in inches |
+| `parcel.height` | number | No | Height in inches |
+| `carrier` | string | No | e.g. `"USPS"`, `"UPS"`, `"FedEx"`. Omit to auto-select cheapest. |
+| `service` | string | No | e.g. `"Priority Mail"`. Must be paired with `carrier`. |
+
+If `carrier`/`service` are omitted, the **cheapest available rate** is automatically selected.
+
+**Response `data`**
+
+```json
+{
+  "tracking_number": "9400111899223397988011",
+  "label_url":       "https://easypost-files.s3.amazonaws.com/files/postage_label/...",
+  "carrier":         "USPS",
+  "service":         "Priority Mail",
+  "rate":            "7.90",
+  "currency":        "USD",
+  "delivery_days":   2,
+  "rates": [ ... ],
+  "order": { ... }
+}
+```
+
+| Field | Notes |
+|---|---|
+| `tracking_number` | Use for carrier tracking page or customer notifications |
+| `label_url` | Open this URL to view/print the label PDF |
+| `rate` | Amount charged in USD |
+| `rates` | Full list of rates that were available (useful for display) |
+| `order` | The full updated order object |
+
+**Errors**
+
+| HTTP | `error` | Meaning |
+|---|---|---|
+| `400` | "Order is missing required shipping address fields..." | Fill in address via `PUT /admin/orders/:id` |
+| `400` | `"No shipping rates available for this shipment"` | Address invalid or carrier unavailable |
+| `400` | `"No rate found for carrier..."` | Specified carrier/service not available — check `rates` from the preview endpoint |
+| `404` | `"Order not found"` | |
+| `503` | `"Shipping label generation is not configured..."` | `EASYPOST_API_KEY` not set |
+| `502` | `"Failed to generate shipping label: ..."` | EasyPost API error — check address validity |
+
+**Full workflow example**
+```javascript
+// Step 1: Preview rates (optional but recommended)
+const { rates } = await adminFetch(
+  `/admin/orders/${orderId}/rates?weight=12&length=6&width=4&height=3`
+);
+// Show rates to admin, let them pick one
+
+// Step 2: Generate and purchase label
+const result = await adminFetch(`/admin/orders/${orderId}/shipping-label`, {
+  method: 'POST',
+  body: JSON.stringify({
+    parcel: { weight: 12, length: 6, width: 4, height: 3 },
+    carrier: 'USPS',
+    service: 'Priority Mail',
+  }),
+});
+
+console.log('Label URL:', result.label_url);      // Open to print
+console.log('Tracking:', result.tracking_number); // Show to customer
+
+// Step 3: After shipping, mark as shipped
+await adminFetch(`/admin/orders/${orderId}`, {
+  method: 'PUT',
+  body: JSON.stringify({ fulfillment_status: 'shipped' }),
+});
+```
+
+---
+
+### Manual tracking entry (no EasyPost)
+
+If you're not using EasyPost, or you purchased a label through another service,
+you can enter tracking info manually:
+
+```javascript
+await adminFetch(`/admin/orders/${orderId}`, {
+  method: 'PUT',
+  body: JSON.stringify({
+    tracking_number:    '9400111899223397988011',
+    shipping_carrier:   'USPS',
+    shipping_service:   'Priority Mail',
+    label_url:          'https://...',  // optional — your label PDF URL
+    fulfillment_status: 'shipped',
+  }),
+});
+```
 
 ---
 
@@ -476,29 +695,38 @@ await adminFetch(`/admin/images/${key}`, { method: 'DELETE' });
 |---|---|
 | `200` | OK |
 | `201` | Resource created (product or image upload) |
-| `401` | Missing or invalid API key |
-| `404` | Product not found |
+| `400` | Bad request — check `error` field |
+| `401` | Missing or invalid JWT token |
+| `404` | Resource not found |
 | `422` | Validation failed — `details` has field-level messages |
 | `500` | Server error (or backend misconfiguration) |
+| `502` | External API error (EasyPost) |
+| `503` | Service not configured (missing secret key) |
 
 ---
 
 ## Pagination pattern
 
 ```javascript
-async function fetchAllProducts() {
+async function fetchAllOrders(filters = {}) {
+  const params = new URLSearchParams({ limit: 50, offset: 0, ...filters });
   const limit  = 50;
   let   offset = 0;
   let   all    = [];
 
   while (true) {
-    const page = await adminFetch(`/admin/products?limit=${limit}&offset=${offset}`);
+    params.set('limit',  limit);
+    params.set('offset', offset);
+    const page = await adminFetch(`/admin/orders?${params}`);
     all    = all.concat(page);
     offset += page.length;
     if (page.length < limit) break;
   }
   return all;
 }
+
+// All paid + unfulfilled orders
+const toFulfill = await fetchAllOrders({ status: 'paid', fulfillment_status: 'unfulfilled' });
 ```
 
 ---
@@ -506,7 +734,6 @@ async function fetchAllProducts() {
 ## Price handling
 
 Always store and send prices as **integers in the smallest currency unit.**
-Apply formatting only at display time.
 
 ```javascript
 // User types "29.99" in a form input
@@ -516,7 +743,6 @@ function parsePriceInput(input, currency = 'usd') {
   return Math.round(parseFloat(input) * Math.pow(10, decimals));
 }
 // parsePriceInput("29.99", "usd") → 2999
-// parsePriceInput("1000",  "jpy") → 1000
 
 // Display price from API
 function formatPrice(price, currency) {
@@ -542,19 +768,19 @@ function formatPrice(price, currency) {
 
 ## Recommended portal views
 
-These are suggestions — build whatever fits your workflow.
-
 | View | API call |
 |---|---|
 | Product table | `GET /admin/products` with pagination |
 | Product detail / edit form | `GET /admin/products/:id` → prefill form → `PUT /admin/products/:id` |
 | New product form | Form → `POST /admin/products` |
 | Toggle active | `PUT /admin/products/:id` with `{ active: !current }` |
-| Bulk deactivate | Loop `PUT /admin/products/:id` with `{ active: false }` for each selected ID |
 | Delete with confirmation | Confirm modal → `DELETE /admin/products/:id` |
 | Image picker / uploader | `POST /admin/images/upload` → append URL → `PUT /admin/products/:id` |
-| Remove image | Filter URL out of `product.images` → `PUT /admin/products/:id` with trimmed array |
-| Delete image from storage | `DELETE /admin/images/:key` (use the `key` returned from upload) |
+| **Orders dashboard** | `GET /admin/orders` — filter by status/fulfillment_status |
+| **Order detail** | `GET /admin/orders/:id` — show items, address, tracking |
+| **Fulfill order** | Preview rates → `POST /admin/orders/:id/shipping-label` → print label |
+| **Mark as shipped** | `PUT /admin/orders/:id` with `{ fulfillment_status: 'shipped' }` |
+| **Manual tracking** | `PUT /admin/orders/:id` with tracking fields |
 
 ---
 
@@ -570,3 +796,8 @@ These are suggestions — build whatever fits your workflow.
 | `DELETE` | `/admin/products/:id` | JWT | Hard delete |
 | `POST` | `/admin/images/upload` | JWT | Upload image to R2 → `201` with `{ url, key }` |
 | `DELETE` | `/admin/images/:key` | JWT | Delete image from R2 |
+| `GET` | `/admin/orders` | JWT | List all orders (filterable by status) |
+| `GET` | `/admin/orders/:id` | JWT | Get single order with line items |
+| `PUT` | `/admin/orders/:id` | JWT | Update order (status, tracking, address, notes) |
+| `GET` | `/admin/orders/:id/rates` | JWT | Preview shipping rates (EasyPost) |
+| `POST` | `/admin/orders/:id/shipping-label` | JWT | Generate & purchase shipping label (EasyPost) |

@@ -10,13 +10,24 @@ function getStripe(secretKey: string): Stripe {
   return new Stripe(secretKey, {
     // Required: Cloudflare Workers use the Fetch API, not Node.js http.
     httpClient: Stripe.createFetchHttpClient(),
-    apiVersion: "2024-11-20.acacia",
+    apiVersion: "2025-02-24.acacia",
   });
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type LineItem = { productId: string; quantity: number };
+
+type ShippingAddress = {
+  name?: string;
+  line1: string;
+  line2?: string;
+  city: string;
+  state?: string;
+  postalCode: string;
+  country: string;
+  phone?: string;
+};
 
 function parseLineItems(body: unknown): LineItem[] | null {
   if (!body || typeof body !== "object" || !Array.isArray((body as { items?: unknown }).items)) {
@@ -35,10 +46,27 @@ function parseLineItems(body: unknown): LineItem[] | null {
     : null;
 }
 
+/**
+ * Parses `SHIPPING_COUNTRIES` env var into a list of Stripe-compatible country codes.
+ * Returns `undefined` when unconfigured (Stripe defaults to all countries).
+ */
+function parseShippingCountries(
+  raw: string | undefined
+): Stripe.Checkout.SessionCreateParams.ShippingAddressCollection.AllowedCountry[] | undefined {
+  if (!raw || raw.trim() === "*" || raw.trim() === "") return undefined;
+  return raw
+    .split(",")
+    .map((c) => c.trim().toUpperCase())
+    .filter(Boolean) as Stripe.Checkout.SessionCreateParams.ShippingAddressCollection.AllowedCountry[];
+}
+
 // ─── POST /checkout/session ───────────────────────────────────────────────────
 /**
  * Creates a Stripe Checkout Session (hosted payment page).
  * The frontend redirects the user to the returned `url`.
+ *
+ * Stripe will collect the customer's shipping address during checkout.
+ * The address is stored on the order when the webhook fires.
  *
  * Body:
  * {
@@ -120,11 +148,22 @@ checkout.post("/session", async (c) => {
       })
     );
 
+    // Build shipping address collection config.
+    const allowedCountries = parseShippingCountries(c.env.SHIPPING_COUNTRIES);
+    const shippingAddressCollection: Stripe.Checkout.SessionCreateParams.ShippingAddressCollection =
+      allowedCountries
+        ? { allowed_countries: allowedCountries }
+        : { allowed_countries: ["US", "CA", "GB", "AU", "NZ"] as Stripe.Checkout.SessionCreateParams.ShippingAddressCollection.AllowedCountry[] };
+
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       line_items: lineItems,
       success_url: successUrl,
       cancel_url: cancelUrl,
+      // Collect shipping address from the customer during checkout.
+      shipping_address_collection: shippingAddressCollection,
+      // Collect phone number for shipping contact.
+      phone_number_collection: { enabled: true },
       metadata: {
         product_ids: items.map((i) => i.productId).join(","),
         quantities: items.map((i) => i.quantity).join(","),
@@ -146,9 +185,23 @@ checkout.post("/session", async (c) => {
  * Creates a Stripe Payment Intent (custom checkout UI).
  * Use this when you want to build your own payment form with Stripe Elements.
  *
+ * When using a custom checkout UI, the frontend should collect the shipping
+ * address and pass it in the `shippingAddress` field. This is stored on the
+ * Stripe Payment Intent and picked up by the webhook handler.
+ *
  * Body:
  * {
- *   items: [{ productId: string, quantity: number }]
+ *   items: [{ productId: string, quantity: number }],
+ *   shippingAddress?: {
+ *     name?:       string,
+ *     line1:       string,
+ *     line2?:      string,
+ *     city:        string,
+ *     state?:      string,
+ *     postalCode:  string,
+ *     country:     string,   // ISO 3166-1 alpha-2, e.g. "US"
+ *     phone?:      string
+ *   }
  * }
  *
  * Response: {
@@ -181,6 +234,11 @@ checkout.post("/intent", async (c) => {
       400
     );
   }
+
+  // Optional shipping address from the custom checkout form.
+  const shippingAddress = (body as { shippingAddress?: unknown }).shippingAddress as
+    | ShippingAddress
+    | undefined;
 
   try {
     const db = getDatabase(c.env);
@@ -215,10 +273,28 @@ checkout.post("/intent", async (c) => {
       0
     );
 
+    // Build the Stripe shipping param if an address was provided.
+    const stripeShipping: Stripe.PaymentIntentCreateParams.Shipping | undefined =
+      shippingAddress
+        ? {
+            name: shippingAddress.name ?? "Customer",
+            address: {
+              line1: shippingAddress.line1,
+              line2: shippingAddress.line2 ?? undefined,
+              city: shippingAddress.city,
+              state: shippingAddress.state ?? undefined,
+              postal_code: shippingAddress.postalCode,
+              country: shippingAddress.country,
+            },
+            phone: shippingAddress.phone ?? undefined,
+          }
+        : undefined;
+
     const intent = await stripe.paymentIntents.create({
       amount: totalAmount,
       currency,
       automatic_payment_methods: { enabled: true },
+      ...(stripeShipping && { shipping: stripeShipping }),
       metadata: {
         product_ids: items.map((i) => i.productId).join(","),
         quantities: items.map((i) => i.quantity).join(","),

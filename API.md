@@ -1,7 +1,14 @@
-# E-commaxxing API — Frontend Agent Reference
+# E-commaxxing API — Frontend Reference
 
 **Base URL:** `https://<your-worker>.workers.dev`
 **Content-Type:** `application/json` on all requests with a body.
+
+> **Version 1.1 changes (frontend team — action required):**
+> - `POST /checkout/session` now collects a shipping address from the customer on the Stripe-hosted page. No frontend changes needed for this flow; Stripe handles it automatically.
+> - `POST /checkout/intent` accepts an optional `shippingAddress` body field for custom checkout UIs. See the [Payment Intent section](#payment-intent-custom-checkout-ui) for the new field.
+> - New public endpoint: `GET /orders/:id` — lets a logged-in customer look up their order status and tracking info after checkout.
+
+---
 
 ## Response Envelope
 
@@ -100,7 +107,8 @@ Returns a single product. `404` if not found or inactive.
 ### Stripe Checkout Session (redirect)
 
 Redirects the customer to a Stripe-hosted payment page.
-Use this if you want Stripe to handle the UI.
+Stripe will collect the customer's **shipping address and phone number** automatically
+during the checkout flow — no extra frontend work required.
 
 ```
 POST /checkout/session
@@ -137,6 +145,10 @@ POST /checkout/session
 
 **What to do with the response:** redirect `window.location.href = data.url`.
 
+After the customer completes payment, Stripe calls the webhook and an order is
+automatically created in the database with status `"paid"`. The `sessionId` can
+be used to look up the order via `GET /orders?session_id={sessionId}`.
+
 **Error cases**
 
 | HTTP | `error` | Meaning |
@@ -151,6 +163,8 @@ POST /checkout/session
 ### Payment Intent (custom checkout UI)
 
 Use this when you want to build your own payment form with [Stripe Elements](https://stripe.com/docs/elements).
+When using this flow, collect the customer's shipping address in your form and
+pass it in `shippingAddress` so it is stored on the order.
 
 ```
 POST /checkout/intent
@@ -162,9 +176,34 @@ POST /checkout/intent
 {
   "items": [
     { "productId": "550e8400-...", "quantity": 1 }
-  ]
+  ],
+  "shippingAddress": {
+    "name":       "Jane Smith",
+    "line1":      "123 Main St",
+    "line2":      "Apt 4B",
+    "city":       "Brooklyn",
+    "state":      "NY",
+    "postalCode": "11201",
+    "country":    "US",
+    "phone":      "+1-555-555-0100"
+  }
 }
 ```
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `items` | array | Yes | At least one item |
+| `items[].productId` | string | Yes | |
+| `items[].quantity` | integer > 0 | Yes | |
+| `shippingAddress` | object | No | Strongly recommended — enables order tracking and shipping labels |
+| `shippingAddress.name` | string | No | Recipient name |
+| `shippingAddress.line1` | string | **Yes if shippingAddress present** | Street address |
+| `shippingAddress.line2` | string | No | Apt/Suite |
+| `shippingAddress.city` | string | **Yes if shippingAddress present** | |
+| `shippingAddress.state` | string | No | State/province/region |
+| `shippingAddress.postalCode` | string | **Yes if shippingAddress present** | |
+| `shippingAddress.country` | string | **Yes if shippingAddress present** | ISO 3166-1 alpha-2, e.g. `"US"` |
+| `shippingAddress.phone` | string | No | |
 
 All items must share the same currency. Mixed-currency carts are rejected.
 
@@ -186,27 +225,171 @@ All items must share the same currency. Mixed-currency carts are rejected.
 | `amount` | Total in smallest currency unit (informational) |
 | `publishableKey` | Use to initialise `Stripe(publishableKey)` — already correct for test/live |
 
-**Stripe Elements integration sketch**
+**Stripe Elements integration**
 
 ```javascript
+// 1. Collect items and shipping address from your form, then:
 const res = await fetch('/checkout/intent', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ items }),
+  body: JSON.stringify({
+    items,
+    shippingAddress: {
+      name:       form.name,
+      line1:      form.address,
+      city:       form.city,
+      state:      form.state,
+      postalCode: form.zip,
+      country:    form.country,
+      phone:      form.phone,
+    },
+  }),
 });
 const { data } = await res.json();
 
+// 2. Initialize Stripe
 const stripe   = Stripe(data.publishableKey);
 const elements = stripe.elements({ clientSecret: data.clientSecret });
 
 const paymentElement = elements.create('payment');
 paymentElement.mount('#payment-element');
 
-// On form submit:
+// 3. On form submit:
 const { error } = await stripe.confirmPayment({
   elements,
   confirmParams: { return_url: 'https://myshop.com/success' },
 });
+```
+
+---
+
+## Order Status (customer-facing)
+
+After a successful payment, customers can look up their order status and
+tracking information. The recommended flow is:
+
+1. On the success page, extract the `session_id` query param from Stripe's
+   redirect URL (e.g. `?session_id=cs_test_...`).
+2. Call `GET /orders?session_id={session_id}` to show order details.
+
+### Look up order by Stripe session
+
+```
+GET /orders?session_id=cs_test_...
+```
+
+**Query params**
+
+| Param | Type | Required | Notes |
+|---|---|---|---|
+| `session_id` | string | Yes | The `{CHECKOUT_SESSION_ID}` from the Stripe success URL |
+
+**Response `data`** — Order object (see schema below).
+
+Returns `404` if no order has been created yet (the webhook may still be
+processing — retry after 2–3 seconds).
+
+**Example — success page**
+
+```javascript
+// successUrl was: "https://myshop.com/success?session_id={CHECKOUT_SESSION_ID}"
+const params = new URLSearchParams(window.location.search);
+const sessionId = params.get('session_id');
+
+async function pollForOrder(sessionId, attempts = 5) {
+  for (let i = 0; i < attempts; i++) {
+    const res  = await fetch(`/orders?session_id=${sessionId}`);
+    const body = await res.json();
+    if (body.ok) return body.data;
+    if (res.status !== 404) throw new Error(body.error);
+    // 404 means webhook hasn't fired yet — wait and retry
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  throw new Error('Order not found after multiple attempts');
+}
+
+const order = await pollForOrder(sessionId);
+showOrderConfirmation(order);
+```
+
+---
+
+### Order schema
+
+```json
+{
+  "id":                       "a1b2c3d4-...",
+  "stripe_session_id":        "cs_test_...",
+  "stripe_payment_intent_id": "pi_...",
+  "status":                   "paid",
+  "fulfillment_status":       "unfulfilled",
+  "customer_email":           "jane@example.com",
+  "customer_name":            "Jane Smith",
+  "shipping_name":            "Jane Smith",
+  "shipping_address_line1":   "123 Main St",
+  "shipping_address_line2":   "Apt 4B",
+  "shipping_city":            "Brooklyn",
+  "shipping_state":           "NY",
+  "shipping_postal_code":     "11201",
+  "shipping_country":         "US",
+  "shipping_phone":           "+1-555-555-0100",
+  "shipping_carrier":         "USPS",
+  "shipping_service":         "Priority Mail",
+  "tracking_number":          "9400111899223397988011",
+  "label_url":                null,
+  "amount_total":             2999,
+  "currency":                 "usd",
+  "metadata":                 {},
+  "notes":                    "",
+  "items": [
+    {
+      "id":           "item-uuid",
+      "order_id":     "a1b2c3d4-...",
+      "product_id":   "550e8400-...",
+      "product_name": "Widget Pro",
+      "price":        2999,
+      "quantity":     1,
+      "currency":     "usd"
+    }
+  ],
+  "created_at": "2024-01-15T10:30:00.000Z",
+  "updated_at": "2024-01-15T12:00:00.000Z"
+}
+```
+
+#### Order status values
+
+| `status` | Meaning | What to show customer |
+|---|---|---|
+| `"pending"` | Payment initiated, not yet confirmed | "Processing…" |
+| `"paid"` | Payment confirmed by Stripe | "Order confirmed!" |
+| `"fulfilled"` | All items shipped | "Order shipped!" |
+| `"cancelled"` | Payment failed or order voided | "Order cancelled" |
+
+#### Fulfillment status values
+
+| `fulfillment_status` | Meaning | What to show customer |
+|---|---|---|
+| `"unfulfilled"` | Paid, not yet shipped | "Preparing your order" |
+| `"processing"` | Shipping label generated, packing | "Your order is being packed" |
+| `"shipped"` | Label scanned / in transit | "Your order is on the way!" |
+| `"delivered"` | Carrier confirmed delivery | "Your order has been delivered" |
+
+#### Tracking
+
+When the order has a `tracking_number`, display it prominently.
+You can link to the carrier's tracking page:
+
+```javascript
+function trackingUrl(carrier, trackingNumber) {
+  const carriers = {
+    USPS:  `https://tools.usps.com/go/TrackConfirmAction?tLabels=${trackingNumber}`,
+    UPS:   `https://www.ups.com/track?tracknum=${trackingNumber}`,
+    FedEx: `https://www.fedex.com/fedextrack/?tracknumbers=${trackingNumber}`,
+    DHL:   `https://www.dhl.com/en/express/tracking.html?AWB=${trackingNumber}`,
+  };
+  return carriers[carrier] ?? `https://google.com/search?q=${carrier}+tracking+${trackingNumber}`;
+}
 ```
 
 ---
@@ -224,8 +407,8 @@ const { error } = await stripe.confirmPayment({
 | `404` | Not found |
 | `422` | Validation failed — `details` field has field-level errors |
 | `500` | Server error |
-| `502` | Stripe returned an error |
-| `503` | Service not configured (usually missing Stripe key) |
+| `502` | Stripe or EasyPost returned an error |
+| `503` | Service not configured (usually missing Stripe or EasyPost key) |
 
 ---
 
@@ -286,13 +469,9 @@ function toLineItem(productId, quantity) {
 // Images — the `images` field is always an array, may be empty.
 // The first entry is treated as the primary/thumbnail image.
 // Always guard against an empty array.
-
 function getPrimaryImage(product, fallback = '/placeholder.png') {
   return product.images.length > 0 ? product.images[0] : fallback;
 }
-
-// Render all images (e.g. a gallery)
-// product.images.map(url => `<img src="${url}" alt="${product.name}" />`)
 ```
 
 ---
@@ -305,3 +484,4 @@ function getPrimaryImage(product, fallback = '/placeholder.png') {
 | `GET` | `/products/:id` | — | Single product |
 | `POST` | `/checkout/session` | — | Stripe hosted checkout → get redirect URL |
 | `POST` | `/checkout/intent` | — | Stripe Payment Intent → get `clientSecret` |
+| `GET` | `/orders?session_id=` | — | Look up order by Stripe session ID (post-checkout) |

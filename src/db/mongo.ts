@@ -5,18 +5,34 @@ import type {
   CreateProductInput,
   UpdateProductInput,
   ProductQueryOptions,
+  Order,
+  OrderItem,
+  CreateOrderInput,
+  UpdateOrderInput,
+  OrderQueryOptions,
+  OrderStatus,
+  FulfillmentStatus,
 } from "../types.js";
 
 // Lazy-import mongodb to avoid bundling issues when using D1.
 // The `mongodb` package works in Cloudflare Workers with `nodejs_compat_v2`.
 type MongoClientType = import("mongodb").MongoClient;
-type CollectionType = import("mongodb").Collection<MongoProductDoc>;
+type ProductCollectionType = import("mongodb").Collection<MongoProductDoc>;
+type OrderCollectionType = import("mongodb").Collection<MongoOrderDoc>;
+type OrderItemCollectionType = import("mongodb").Collection<MongoOrderItemDoc>;
 
 type MongoProductDoc = Omit<Product, "id"> & { _id: string };
 
+type MongoOrderItemDoc = Omit<OrderItem, "id"> & { _id: string };
+
+type MongoOrderDoc = Omit<Order, "id" | "items"> & {
+  _id: string;
+  // items are stored in a separate collection; this field is populated at query time
+};
+
 let _client: MongoClientType | null = null;
 
-async function getCollection(uri: string, dbName: string): Promise<CollectionType> {
+async function getClient(uri: string): Promise<MongoClientType> {
   if (!_client) {
     const { MongoClient } = await import("mongodb");
     _client = new MongoClient(uri, {
@@ -25,7 +41,7 @@ async function getCollection(uri: string, dbName: string): Promise<CollectionTyp
     });
     await _client.connect();
   }
-  return _client.db(dbName).collection<MongoProductDoc>("products");
+  return _client;
 }
 
 export class MongoDatabase implements Database {
@@ -34,13 +50,26 @@ export class MongoDatabase implements Database {
     private readonly dbName: string
   ) {}
 
-  private async col(): Promise<CollectionType> {
-    return getCollection(this.uri, this.dbName);
+  private async productCol(): Promise<ProductCollectionType> {
+    const client = await getClient(this.uri);
+    return client.db(this.dbName).collection<MongoProductDoc>("products");
   }
+
+  private async orderCol(): Promise<OrderCollectionType> {
+    const client = await getClient(this.uri);
+    return client.db(this.dbName).collection<MongoOrderDoc>("orders");
+  }
+
+  private async orderItemCol(): Promise<OrderItemCollectionType> {
+    const client = await getClient(this.uri);
+    return client.db(this.dbName).collection<MongoOrderItemDoc>("order_items");
+  }
+
+  // ── Products ────────────────────────────────────────────────────────────────
 
   async getProducts(options: ProductQueryOptions = {}): Promise<Product[]> {
     const { limit = 50, offset = 0, activeOnly = true } = options;
-    const col = await this.col();
+    const col = await this.productCol();
 
     const filter = activeOnly ? { active: true } : {};
     const docs = await col
@@ -54,7 +83,7 @@ export class MongoDatabase implements Database {
   }
 
   async getProduct(id: string): Promise<Product | null> {
-    const col = await this.col();
+    const col = await this.productCol();
     const doc = await col.findOne({ _id: id });
     return doc ? docToProduct(doc) : null;
   }
@@ -63,7 +92,7 @@ export class MongoDatabase implements Database {
     input: CreateProductInput,
     defaultCurrency: string
   ): Promise<Product> {
-    const col = await this.col();
+    const col = await this.productCol();
     const now = new Date().toISOString();
 
     const doc: MongoProductDoc = {
@@ -90,7 +119,7 @@ export class MongoDatabase implements Database {
     id: string,
     input: UpdateProductInput
   ): Promise<Product | null> {
-    const col = await this.col();
+    const col = await this.productCol();
     const now = new Date().toISOString();
 
     const updateFields: Partial<MongoProductDoc> = {
@@ -115,7 +144,7 @@ export class MongoDatabase implements Database {
   }
 
   async deleteProduct(id: string): Promise<boolean> {
-    const col = await this.col();
+    const col = await this.productCol();
     const result = await col.deleteOne({ _id: id });
     return result.deletedCount > 0;
   }
@@ -125,7 +154,7 @@ export class MongoDatabase implements Database {
     stripeProductId: string,
     stripePriceId: string
   ): Promise<void> {
-    const col = await this.col();
+    const col = await this.productCol();
     await col.updateOne(
       { _id: id },
       {
@@ -137,9 +166,176 @@ export class MongoDatabase implements Database {
       }
     );
   }
+
+  // ── Orders ──────────────────────────────────────────────────────────────────
+
+  async createOrder(input: CreateOrderInput): Promise<Order> {
+    const orderCol = await this.orderCol();
+    const itemCol = await this.orderItemCol();
+    const now = new Date().toISOString();
+    const id = randomUUID();
+
+    const orderDoc: MongoOrderDoc = {
+      _id: id,
+      stripe_session_id: input.stripe_session_id ?? null,
+      stripe_payment_intent_id: input.stripe_payment_intent_id ?? null,
+      status: (input.status ?? "pending") as OrderStatus,
+      fulfillment_status: "unfulfilled" as FulfillmentStatus,
+      customer_email: input.customer_email ?? null,
+      customer_name: input.customer_name ?? null,
+      shipping_name: input.shipping_name ?? null,
+      shipping_address_line1: input.shipping_address_line1 ?? null,
+      shipping_address_line2: input.shipping_address_line2 ?? null,
+      shipping_city: input.shipping_city ?? null,
+      shipping_state: input.shipping_state ?? null,
+      shipping_postal_code: input.shipping_postal_code ?? null,
+      shipping_country: input.shipping_country ?? null,
+      shipping_phone: input.shipping_phone ?? null,
+      shipping_carrier: null,
+      shipping_service: null,
+      tracking_number: null,
+      label_url: null,
+      amount_total: input.amount_total,
+      currency: input.currency,
+      metadata: input.metadata ?? {},
+      notes: input.notes ?? "",
+      created_at: now,
+      updated_at: now,
+    };
+
+    await orderCol.insertOne(orderDoc);
+
+    const itemDocs: MongoOrderItemDoc[] = input.items.map((item) => ({
+      _id: randomUUID(),
+      order_id: id,
+      product_id: item.product_id,
+      product_name: item.product_name,
+      price: item.price,
+      quantity: item.quantity,
+      currency: item.currency,
+    }));
+
+    if (itemDocs.length > 0) {
+      await itemCol.insertMany(itemDocs);
+    }
+
+    return docToOrder(orderDoc, itemDocs.map(docToOrderItem));
+  }
+
+  async getOrder(id: string): Promise<Order | null> {
+    const orderCol = await this.orderCol();
+    const itemCol = await this.orderItemCol();
+
+    const doc = await orderCol.findOne({ _id: id });
+    if (!doc) return null;
+
+    const itemDocs = await itemCol.find({ order_id: id }).toArray();
+    return docToOrder(doc, itemDocs.map(docToOrderItem));
+  }
+
+  async getOrderByStripeSession(sessionId: string): Promise<Order | null> {
+    const orderCol = await this.orderCol();
+    const itemCol = await this.orderItemCol();
+
+    const doc = await orderCol.findOne({ stripe_session_id: sessionId });
+    if (!doc) return null;
+
+    const itemDocs = await itemCol.find({ order_id: doc._id }).toArray();
+    return docToOrder(doc, itemDocs.map(docToOrderItem));
+  }
+
+  async getOrderByStripeIntent(intentId: string): Promise<Order | null> {
+    const orderCol = await this.orderCol();
+    const itemCol = await this.orderItemCol();
+
+    const doc = await orderCol.findOne({ stripe_payment_intent_id: intentId });
+    if (!doc) return null;
+
+    const itemDocs = await itemCol.find({ order_id: doc._id }).toArray();
+    return docToOrder(doc, itemDocs.map(docToOrderItem));
+  }
+
+  async getOrders(options: OrderQueryOptions = {}): Promise<Order[]> {
+    const { limit = 50, offset = 0, status, fulfillment_status } = options;
+    const orderCol = await this.orderCol();
+    const itemCol = await this.orderItemCol();
+
+    const filter: Record<string, unknown> = {};
+    if (status) filter.status = status;
+    if (fulfillment_status) filter.fulfillment_status = fulfillment_status;
+
+    const docs = await orderCol
+      .find(filter)
+      .sort({ created_at: -1 })
+      .skip(offset)
+      .limit(limit)
+      .toArray();
+
+    if (docs.length === 0) return [];
+
+    const orderIds = docs.map((d) => d._id);
+    const allItems = await itemCol.find({ order_id: { $in: orderIds } }).toArray();
+
+    const itemsByOrder = new Map<string, OrderItem[]>();
+    for (const item of allItems) {
+      const list = itemsByOrder.get(item.order_id) ?? [];
+      list.push(docToOrderItem(item));
+      itemsByOrder.set(item.order_id, list);
+    }
+
+    return docs.map((doc) => docToOrder(doc, itemsByOrder.get(doc._id) ?? []));
+  }
+
+  async updateOrder(id: string, input: UpdateOrderInput): Promise<Order | null> {
+    const orderCol = await this.orderCol();
+    const now = new Date().toISOString();
+
+    const updateFields: Partial<MongoOrderDoc> = {
+      ...(input.status !== undefined && { status: input.status }),
+      ...(input.fulfillment_status !== undefined && { fulfillment_status: input.fulfillment_status }),
+      ...(input.customer_email !== undefined && { customer_email: input.customer_email }),
+      ...(input.customer_name !== undefined && { customer_name: input.customer_name }),
+      ...(input.shipping_name !== undefined && { shipping_name: input.shipping_name }),
+      ...(input.shipping_address_line1 !== undefined && { shipping_address_line1: input.shipping_address_line1 }),
+      ...(input.shipping_address_line2 !== undefined && { shipping_address_line2: input.shipping_address_line2 }),
+      ...(input.shipping_city !== undefined && { shipping_city: input.shipping_city }),
+      ...(input.shipping_state !== undefined && { shipping_state: input.shipping_state }),
+      ...(input.shipping_postal_code !== undefined && { shipping_postal_code: input.shipping_postal_code }),
+      ...(input.shipping_country !== undefined && { shipping_country: input.shipping_country }),
+      ...(input.shipping_phone !== undefined && { shipping_phone: input.shipping_phone }),
+      ...(input.shipping_carrier !== undefined && { shipping_carrier: input.shipping_carrier }),
+      ...(input.shipping_service !== undefined && { shipping_service: input.shipping_service }),
+      ...(input.tracking_number !== undefined && { tracking_number: input.tracking_number }),
+      ...(input.label_url !== undefined && { label_url: input.label_url }),
+      ...(input.notes !== undefined && { notes: input.notes }),
+      ...(input.metadata !== undefined && { metadata: input.metadata }),
+      updated_at: now,
+    };
+
+    const result = await orderCol.findOneAndUpdate(
+      { _id: id },
+      { $set: updateFields },
+      { returnDocument: "after" }
+    );
+
+    if (!result) return null;
+    return this.getOrder(id);
+  }
 }
+
+// ─── Conversion helpers ───────────────────────────────────────────────────────
 
 function docToProduct(doc: MongoProductDoc): Product {
   const { _id, ...rest } = doc;
   return { id: _id, ...rest };
+}
+
+function docToOrderItem(doc: MongoOrderItemDoc): OrderItem {
+  const { _id, ...rest } = doc;
+  return { id: _id, ...rest };
+}
+
+function docToOrder(doc: MongoOrderDoc, items: OrderItem[]): Order {
+  const { _id, ...rest } = doc;
+  return { id: _id, ...rest, items };
 }

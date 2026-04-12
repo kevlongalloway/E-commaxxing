@@ -25,23 +25,26 @@ images.post('/upload', async (c) => {
   }
 
   const file = formData.get('file')
-  if (!(file instanceof File)) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (!file || typeof (file as any).stream !== 'function') {
     return c.json(err('Missing "file" field'), 400)
   }
+  const fileEntry = file as unknown as File
 
-  if (!ALLOWED_TYPES.includes(file.type)) {
-    return c.json(err(`Invalid file type "${file.type}". Allowed: jpeg, png, webp, gif`), 400)
+  if (!ALLOWED_TYPES.includes(fileEntry.type)) {
+    return c.json(err(`Invalid file type "${fileEntry.type}". Allowed: jpeg, png, webp, gif`), 400)
   }
 
-  const ext = EXT[file.type]
+  const ext = EXT[fileEntry.type]
   const key = `${crypto.randomUUID()}.${ext}`
 
-  await c.env.IMAGES.put(key, file.stream(), {
-    httpMetadata: { contentType: file.type },
+  await c.env.IMAGES.put(key, fileEntry.stream(), {
+    httpMetadata: { contentType: fileEntry.type },
   })
 
   const url = `${c.env.R2_PUBLIC_URL}/${key}`
   return c.json(ok({ url, key }), 201)
+
 })
 
 images.delete('/:key{.+}', async (c) => {
