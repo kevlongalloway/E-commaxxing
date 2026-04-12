@@ -99,6 +99,263 @@ Returns a single product. `404` if not found or inactive.
 | `metadata` | object | Arbitrary key/value pairs set by admin |
 | `stock` | integer | `-1` = unlimited |
 | `active` | boolean | Always `true` on public endpoints |
+| `metadata` | object | Arbitrary key/value pairs — used for sizes, colors, SKUs, etc. |
+
+---
+
+## Product Variants (Sizes, Colors)
+
+Variants such as clothing sizes are stored in `metadata`. There are two patterns
+depending on how granular your inventory tracking needs to be.
+
+---
+
+### Pattern A — Sizes as metadata (simple)
+
+Use this when you track stock at the product level (not per size).
+
+**What the product looks like from the API:**
+
+```json
+{
+  "id":    "550e8400-...",
+  "name":  "Classic Tee",
+  "price": 2999,
+  "stock": 50,
+  "metadata": {
+    "sizes":      ["XS", "S", "M", "L", "XL", "XXL"],
+    "size_stock": { "XS": 5, "S": 12, "M": 20, "L": 18, "XL": 8, "XXL": 3 }
+  }
+}
+```
+
+**Reading sizes and rendering a size picker:**
+
+```javascript
+const res     = await fetch(`/products/${productId}`);
+const { data: product } = await res.json();
+
+const sizes     = product.metadata.sizes     ?? [];
+const sizeStock = product.metadata.size_stock ?? {};
+
+// Render buttons — disable if that size is out of stock
+sizes.forEach(size => {
+  const qty      = sizeStock[size];
+  const inStock  = qty === undefined || qty > 0;   // undefined = not tracked per-size
+  const lowStock = qty !== undefined && qty <= 4;
+
+  // e.g. React:
+  // <button disabled={!inStock} onClick={() => selectSize(size)}>
+  //   {size} {lowStock ? `(Only ${qty} left)` : ''}
+  // </button>
+});
+```
+
+**Passing the selected size through checkout:**
+
+The selected size is not a separate `productId` in this pattern, so store it
+client-side and surface it on the confirmation page. The easiest way is to
+append it to `successUrl`:
+
+```javascript
+const selectedSize = 'M';
+
+const res = await fetch('/checkout/session', {
+  method:  'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    items:      [{ productId: product.id, quantity: 1 }],
+    successUrl: `https://myshop.com/success?session_id={CHECKOUT_SESSION_ID}&size=${selectedSize}`,
+    cancelUrl:  'https://myshop.com/cart',
+  }),
+});
+const { data } = await res.json();
+window.location.href = data.url;
+```
+
+On the success page, read both params:
+```javascript
+const params    = new URLSearchParams(window.location.search);
+const sessionId = params.get('session_id');
+const size      = params.get('size');   // "M"
+
+const order = await pollForOrder(sessionId);
+// Display: "Classic Tee — Size M"
+```
+
+> **Admin note:** When using this pattern the admin should update
+> `metadata.size_stock` manually after fulfillment, or use `stock` as the
+> combined total across all sizes.
+
+---
+
+### Pattern B — One product per size (recommended for inventory control)
+
+Use this when you need exact per-size stock counts tracked automatically
+(stock is decremented by the webhook on every paid order).
+
+**How products are structured in the catalog:**
+
+```json
+[
+  { "id": "uuid-S", "name": "Classic Tee — S", "price": 2999, "stock": 12,
+    "metadata": { "base_product": "classic-tee", "size": "S" } },
+  { "id": "uuid-M", "name": "Classic Tee — M", "price": 2999, "stock": 20,
+    "metadata": { "base_product": "classic-tee", "size": "M" } },
+  { "id": "uuid-L", "name": "Classic Tee — L", "price": 2999, "stock": 18,
+    "metadata": { "base_product": "classic-tee", "size": "L" } }
+]
+```
+
+**Grouping variants into a single product card:**
+
+```javascript
+// Fetch all products
+const res      = await fetch('/products?limit=100');
+const { data } = await res.json();
+
+// Group by base_product
+const groups = {};
+data.forEach(product => {
+  const base = product.metadata.base_product;
+  if (!base) {
+    // Not a variant — treat as standalone product
+    groups[product.id] = { product, variants: [] };
+    return;
+  }
+  if (!groups[base]) groups[base] = { product, variants: [] };
+  groups[base].variants.push(product);
+});
+
+// For each group, sort variants by size order
+const SIZE_ORDER = ['XS', 'S', 'M', 'L', 'XL', 'XXL'];
+Object.values(groups).forEach(({ variants }) => {
+  variants.sort((a, b) =>
+    SIZE_ORDER.indexOf(a.metadata.size) - SIZE_ORDER.indexOf(b.metadata.size)
+  );
+});
+```
+
+**Rendering a size picker that swaps productId:**
+
+```javascript
+function ProductCard({ group }) {
+  const { product, variants } = group;
+  const [selected, setSelected] = useState(null);
+
+  // Use base product for name/images/price, variants for size selection
+  const displayProduct = variants.length > 0 ? variants[0] : product;
+
+  return (
+    <div>
+      <img src={getPrimaryImage(displayProduct)} alt={displayProduct.name} />
+      <h2>{product.metadata.base_product ?? product.name}</h2>
+      <p>{formatPrice(displayProduct.price, displayProduct.currency)}</p>
+
+      {/* Size picker */}
+      {variants.length > 0 && (
+        <div className="size-picker">
+          {variants.map(v => {
+            const soldOut = v.stock === 0;
+            const lowStock = v.stock > 0 && v.stock <= 4;
+            return (
+              <button
+                key={v.id}
+                disabled={soldOut}
+                onClick={() => setSelected(v)}
+                className={selected?.id === v.id ? 'active' : ''}
+              >
+                {v.metadata.size}
+                {soldOut  ? ' — Sold out'        : ''}
+                {lowStock ? ` — Only ${v.stock} left` : ''}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <button
+        disabled={variants.length > 0 && !selected}
+        onClick={() => addToCart(selected ?? product)}
+      >
+        {variants.length > 0 && !selected ? 'Select a size' : 'Add to cart'}
+      </button>
+    </div>
+  );
+}
+```
+
+**Checkout — pass the selected variant's productId:**
+
+```javascript
+// selected is the specific size variant product object
+await fetch('/checkout/session', {
+  method:  'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    items:      [{ productId: selected.id, quantity: 1 }],
+    successUrl: `https://myshop.com/success?session_id={CHECKOUT_SESSION_ID}`,
+    cancelUrl:  'https://myshop.com/cart',
+  }),
+});
+```
+
+Stock is decremented automatically by the API when the webhook fires.
+The `product_name` on the order will be `"Classic Tee — M"` so size is
+already captured in the order record.
+
+---
+
+### Multi-item cart with mixed sizes
+
+Both patterns support adding multiple sizes to a single checkout:
+
+```javascript
+const cart = [
+  { productId: 'uuid-M', quantity: 1 },  // Tee in M
+  { productId: 'uuid-L', quantity: 2 },  // Tee in L ×2
+];
+
+await fetch('/checkout/session', {
+  method:  'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    items:      cart,
+    successUrl: `https://myshop.com/success?session_id={CHECKOUT_SESSION_ID}`,
+    cancelUrl:  'https://myshop.com/cart',
+  }),
+});
+```
+
+---
+
+### Helper functions
+
+```javascript
+// Format price for display
+function formatPrice(price, currency) {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency', currency: currency.toUpperCase(),
+  }).format(price / 100);
+}
+
+// Get primary image with fallback
+function getPrimaryImage(product, fallback = '/placeholder.png') {
+  return product.images.length > 0 ? product.images[0] : fallback;
+}
+
+// Check if a size variant is available
+function isAvailable(product) {
+  return product.active && (product.stock === -1 || product.stock > 0);
+}
+
+// Stock badge text
+function stockBadge(stock) {
+  if (stock === 0)              return 'Sold out';
+  if (stock > 0 && stock <= 4) return `Only ${stock} left`;
+  return null;  // no badge needed
+}
+```
 
 ---
 
