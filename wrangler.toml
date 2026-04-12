@@ -49,6 +49,25 @@ DEFAULT_CURRENCY = "usd"
 # Example: "https://pub-abc123def456.r2.dev"
 R2_PUBLIC_URL = "https://pub-1a71d6fe08994f2daf1877353b918043.r2.dev"
 
+# ─── Shipping address collection ─────────────────────────────────────────────
+# Comma-separated ISO 3166-1 alpha-2 country codes that Stripe Checkout will
+# accept for shipping address collection.
+# Use "*" or leave blank to default to: US, CA, GB, AU, NZ
+# Example: "US,CA,GB,AU,NZ,DE,FR"
+SHIPPING_COUNTRIES = "US,CA,GB,AU,NZ"
+
+# ─── Store from-address (used for shipping labels) ───────────────────────────
+# These are NOT secrets — they are your store's physical return/ship-from address.
+# Required when using the shipping label generation feature (EASYPOST_API_KEY).
+STORE_NAME         = "My Store"
+STORE_ADDRESS_LINE1 = "123 Fulfillment Way"
+STORE_ADDRESS_LINE2 = ""
+STORE_CITY         = "Los Angeles"
+STORE_STATE        = "CA"
+STORE_POSTAL_CODE  = "90001"
+STORE_COUNTRY      = "US"
+STORE_PHONE        = ""
+
 # ─── Local Development ────────────────────────────────────────────────────────
 # For secrets during local dev, create a `.dev.vars` file (see .dev.vars.example)
 # DO NOT put secrets in this file — use `wrangler secret put` for production
@@ -61,6 +80,9 @@ R2_PUBLIC_URL = "https://pub-1a71d6fe08994f2daf1877353b918043.r2.dev"
 #   wrangler secret put JWT_SECRET          (use a long random string, e.g. openssl rand -hex 32)
 #   wrangler secret put STRIPE_SECRET_KEY
 #   wrangler secret put STRIPE_WEBHOOK_SECRET
-#   wrangler secret put MONGODB_URI   (only if DB_ADAPTER = "mongodb")
+#   wrangler secret put MONGODB_URI         (only if DB_ADAPTER = "mongodb")
+#
+# Optional secrets for shipping label generation:
+#   wrangler secret put EASYPOST_API_KEY    (from https://www.easypost.com — free account available)
 #
 # `npm run setup` handles all of this interactively.

@@ -11,6 +11,11 @@ import { adminLogin } from "./routes/adminLogin.js";
 import { checkout } from "./routes/checkout.js";
 import { webhooks } from "./routes/webhooks.js";
 import images from "./routes/images.js";
+import { orders } from "./routes/orders.js";
+import { shipping } from "./routes/shipping.js";
+import { orderStatus } from "./routes/orderStatus.js";
+import { discounts } from "./routes/discounts.js";
+import { discountValidate } from "./routes/discountValidate.js";
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -34,7 +39,7 @@ app.get("/", (c) =>
     ok: true,
     data: {
       service: "e-commaxxing",
-      version: "1.0.0",
+      version: "1.1.0",
       db: c.env.DB_ADAPTER ?? "d1",
     },
   })
@@ -53,6 +58,12 @@ app.route("/checkout", checkout);
 // Stripe webhooks (verified by signature, no auth middleware needed)
 app.route("/webhooks", webhooks);
 
+// Public order status lookup (customer-facing, secured by unguessable session_id)
+app.route("/orders", orderStatus);
+
+// Public discount validation (customer enters code before checkout)
+app.route("/discounts", discountValidate);
+
 // ─── Admin Routes ─────────────────────────────────────────────────────────────
 
 // Login is public — no auth required.
@@ -68,6 +79,15 @@ app.use("/admin/*", async (c, next) => {
 });
 app.route("/admin", admin);
 app.route("/admin/images", images);
+
+// Order management (admin only — protected by the middleware above)
+app.route("/admin/orders", orders);
+
+// Discount / promo / sale management (admin only)
+app.route("/admin/discounts", discounts);
+
+// Shipping label generation per order (admin only)
+app.route("/admin/orders", shipping);
 
 // ─── 404 Handler ─────────────────────────────────────────────────────────────
 
