@@ -107,6 +107,47 @@ admin.post(
 );
 
 /**
+ * PUT /admin/products/reorder
+ *
+ * Reorders products by updating their display_order field.
+ * Must be registered before PUT /products/:id so "reorder" is not captured
+ * as an :id parameter.
+ *
+ * Body: { products: [{ id: string, display_order: number }, ...] }
+ * Response: { ok: true, data: Product[] }
+ */
+admin.put(
+  "/products/reorder",
+  zValidator(
+    "json",
+    z.object({
+      products: z.array(
+        z.object({
+          id: z.string(),
+          display_order: z.number().int().gte(0),
+        })
+      ),
+    }),
+    (result, c) => {
+      if (!result.success) {
+        return c.json(err("Invalid request body", result.error.flatten()), 400);
+      }
+    }
+  ),
+  async (c) => {
+    const { products } = c.req.valid("json");
+    try {
+      const db = getDatabase(c.env);
+      const updated = await db.reorderProducts(products);
+      return c.json(ok(updated));
+    } catch (e) {
+      console.error("PUT /admin/products/reorder error:", e);
+      return c.json(err("Failed to reorder products"), 500);
+    }
+  }
+);
+
+/**
  * PUT /admin/products/:id
  *
  * Updates an existing product. All fields are optional — only supplied
@@ -156,44 +197,5 @@ admin.delete("/products/:id", async (c) => {
     return c.json(err("Failed to delete product"), 500);
   }
 });
-
-/**
- * PUT /admin/products/reorder
- *
- * Reorders products by updating their display_order field.
- *
- * Body: { products: [{ id: string, display_order: number }, ...] }
- * Response: { ok: true, data: Product[] }
- */
-admin.put(
-  "/products/reorder",
-  zValidator(
-    "json",
-    z.object({
-      products: z.array(
-        z.object({
-          id: z.string(),
-          display_order: z.number().int().gte(0),
-        })
-      ),
-    }),
-    (result, c) => {
-      if (!result.success) {
-        return c.json(err("Validation failed", result.error.flatten()), 422);
-      }
-    }
-  ),
-  async (c) => {
-    const { products } = c.req.valid("json");
-    try {
-      const db = getDatabase(c.env);
-      const updated = await db.reorderProducts(products);
-      return c.json(ok(updated));
-    } catch (e) {
-      console.error("PUT /admin/products/reorder error:", e);
-      return c.json(err("Failed to reorder products"), 500);
-    }
-  }
-);
 
 export { admin };
