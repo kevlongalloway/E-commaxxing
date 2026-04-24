@@ -56,8 +56,6 @@ export type Product = {
   active: boolean;
   stripe_product_id: string | null;
   stripe_price_id: string | null;
-  /** Custom display order for products (ascending). 0 = first */
-  display_order: number;
   created_at: string;
   updated_at: string;
 };
@@ -273,7 +271,6 @@ export interface Database {
   updateProduct(id: string, input: UpdateProductInput): Promise<Product | null>;
   deleteProduct(id: string): Promise<boolean>;
   updateStripeIds(id: string, stripeProductId: string, stripePriceId: string): Promise<void>;
-  reorderProducts(updates: Array<{ id: string; display_order: number }>): Promise<Product[]>;
 
   // ── Orders ──
   createOrder(input: CreateOrderInput): Promise<Order>;

@@ -34,7 +34,6 @@ type ProductRow = {
   active: number;      // 0 | 1 (SQLite has no boolean)
   stripe_product_id: string | null;
   stripe_price_id: string | null;
-  display_order: number;
   created_at: string;
   updated_at: string;
 };
@@ -142,8 +141,8 @@ export class D1Database implements Database {
     const { limit = 50, offset = 0, activeOnly = true } = options;
 
     const query = activeOnly
-      ? "SELECT * FROM products WHERE active = 1 ORDER BY display_order ASC, created_at DESC LIMIT ?1 OFFSET ?2"
-      : "SELECT * FROM products ORDER BY display_order ASC, created_at DESC LIMIT ?1 OFFSET ?2";
+      ? "SELECT * FROM products WHERE active = 1 ORDER BY created_at DESC LIMIT ?1 OFFSET ?2"
+      : "SELECT * FROM products ORDER BY created_at DESC LIMIT ?1 OFFSET ?2";
 
     const { results } = await this.db
       .prepare(query)
@@ -181,7 +180,6 @@ export class D1Database implements Database {
       active: input.active ?? true,
       stripe_product_id: null,
       stripe_price_id: null,
-      display_order: 999999,
       created_at: now,
       updated_at: now,
     };
@@ -190,8 +188,8 @@ export class D1Database implements Database {
       .prepare(
         `INSERT INTO products
           (id, name, description, price, currency, images, metadata, stock, active,
-           stripe_product_id, stripe_price_id, display_order, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)`
+           stripe_product_id, stripe_price_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`
       )
       .bind(
         product.id,
@@ -205,7 +203,6 @@ export class D1Database implements Database {
         product.active ? 1 : 0,
         product.stripe_product_id,
         product.stripe_price_id,
-        product.display_order,
         product.created_at,
         product.updated_at
       )
@@ -273,23 +270,6 @@ export class D1Database implements Database {
       )
       .bind(stripeProductId, stripePriceId, new Date().toISOString(), id)
       .run();
-  }
-
-  async reorderProducts(updates: Array<{ id: string; display_order: number }>): Promise<Product[]> {
-    const now = new Date().toISOString();
-    for (const update of updates) {
-      await this.db
-        .prepare("UPDATE products SET display_order = ?1, updated_at = ?2 WHERE id = ?3")
-        .bind(update.display_order, now, update.id)
-        .run();
-    }
-    const ids = updates.map((u) => u.id);
-    const placeholders = ids.map((_, i) => `?${i + 1}`).join(",");
-    const { results } = await this.db
-      .prepare(`SELECT * FROM products WHERE id IN (${placeholders})`)
-      .bind(...ids)
-      .all<ProductRow>();
-    return (results ?? []).map(rowToProduct);
   }
 
   // ── Orders ──────────────────────────────────────────────────────────────────

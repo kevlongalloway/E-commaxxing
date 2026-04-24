@@ -87,7 +87,7 @@ export class MongoDatabase implements Database {
     const filter = activeOnly ? { active: true } : {};
     const docs = await col
       .find(filter)
-      .sort({ display_order: 1, created_at: -1 })
+      .sort({ created_at: -1 })
       .skip(offset)
       .limit(limit)
       .toArray();
@@ -120,7 +120,6 @@ export class MongoDatabase implements Database {
       active: input.active ?? true,
       stripe_product_id: null,
       stripe_price_id: null,
-      display_order: 999999,
       created_at: now,
       updated_at: now,
     };
@@ -179,20 +178,6 @@ export class MongoDatabase implements Database {
         },
       }
     );
-  }
-
-  async reorderProducts(updates: Array<{ id: string; display_order: number }>): Promise<Product[]> {
-    const col = await this.productCol();
-    const now = new Date().toISOString();
-    for (const update of updates) {
-      await col.updateOne(
-        { _id: update.id },
-        { $set: { display_order: update.display_order, updated_at: now } }
-      );
-    }
-    const ids = updates.map((u) => u.id);
-    const docs = await col.find({ _id: { $in: ids } }).toArray();
-    return docs.map(docToProduct);
   }
 
   // ── Orders ──────────────────────────────────────────────────────────────────
