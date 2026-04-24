@@ -1,7 +1,7 @@
 -- Migration: 0004_add_product_display_order
 -- Adds display_order column to products table to support custom product ordering.
 
-ALTER TABLE products ADD COLUMN display_order INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE products ADD COLUMN display_order INTEGER NOT NULL DEFAULT 999999;
 
 -- Initialize display_order based on creation order (ascending by created_at)
 -- This assigns order 0 to the oldest product, 1 to the next, etc.
