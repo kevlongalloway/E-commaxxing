@@ -959,3 +959,47 @@ function getPrimaryImage(product, fallback = '/placeholder.png') {
 | `POST` | `/checkout/intent` | — | Stripe Payment Intent → get `clientSecret` (supports `discountCode`) |
 | `POST` | `/discounts/validate` | — | Validate a discount code or preview automatic discounts |
 | `GET` | `/orders?session_id=` | — | Look up order status and tracking by Stripe session ID |
+| `POST` | `/newsletter/subscribe` | — | Join the email list → `201`, or `200` if already subscribed |
+| `POST` | `/newsletter/unsubscribe` | — | Opt out by `email` or `token` |
+| `GET` | `/newsletter/unsubscribe?token=` | — | One-click opt-out for email footer links |
+
+---
+
+## Newsletter signup
+
+Public, no auth — call it straight from your storefront footer or popup.
+
+```
+POST /newsletter/subscribe
+```
+
+```jsonc
+// Request
+{
+  "email": "fan@example.com",   // required
+  "name": "Fan",                 // optional
+  "source": "footer",            // optional — "footer" | "popup" | "checkout" | …
+  "website": ""                  // honeypot — render it hidden, always send empty
+}
+```
+
+```jsonc
+// 201 — added
+{ "ok": true, "data": { "email": "fan@example.com", "status": "subscribed",
+                        "already_subscribed": false, "resubscribed": false } }
+
+// 200 — already on the list (this is a success, not an error)
+{ "ok": true, "data": { …, "already_subscribed": true } }
+
+// 422 invalid email · 429 rate limited (10 requests/minute per IP)
+```
+
+Signing up twice is idempotent — branch your success copy on `already_subscribed`
+and `resubscribed` rather than treating a repeat as a failure.
+
+The `website` field is a bot trap: render it off-screen (not `type="hidden"`) so
+real users never fill it in. Requests that arrive with it filled get a normal
+success response and are silently discarded.
+
+Full details, including unsubscribe flows, are in
+**[DASHBOARD_API.md](./DASHBOARD_API.md)**.

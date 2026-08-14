@@ -16,6 +16,8 @@ A fully-featured e-commerce API backend running on **Cloudflare Workers** (serve
 | **CSRF** | Optional Origin-header check |
 | **Admin API** | Full product CRUD, protected by API key |
 | **Public API** | Read-only product catalog |
+| **Dashboard analytics** | Sales, orders, AOV, top products, period-over-period deltas |
+| **Newsletter** | Public signup endpoint + admin subscriber list and CSV export |
 
 ---
 
@@ -180,6 +182,13 @@ All responses follow this shape:
 
 Prices are always in the **smallest currency unit** (cents for USD, pence for GBP, etc.).
 `1000` = $10.00 USD.
+
+---
+
+> **Dashboard & newsletter endpoints** — `/admin/analytics/*`, `/admin/newsletter/*`,
+> and the public `/newsletter/*` routes are documented in full in
+> [DASHBOARD_API.md](./DASHBOARD_API.md). They require migration `0005`
+> (`npm run db:migrate`).
 
 ---
 

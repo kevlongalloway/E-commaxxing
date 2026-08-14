@@ -1023,3 +1023,40 @@ DELETE /admin/discounts/:id
 | `POST` | `/admin/discounts` | JWT | Create discount / sale / promo → `201` |
 | `PUT` | `/admin/discounts/:id` | JWT | Update (cannot change code) |
 | `DELETE` | `/admin/discounts/:id` | JWT | Delete discount |
+| `GET` | `/admin/analytics/dashboard` | JWT | Whole overview page in one call |
+| `GET` | `/admin/analytics/overview` | JWT | KPI cards + period-over-period deltas |
+| `GET` | `/admin/analytics/timeseries` | JWT | Sales over time, zero-filled for charting |
+| `GET` | `/admin/analytics/top-products` | JWT | Best sellers by units or revenue |
+| `GET` | `/admin/newsletter/subscribers` | JWT | Paginated subscriber list |
+| `GET` | `/admin/newsletter/stats` | JWT | List totals + 30-day growth |
+| `GET` | `/admin/newsletter/export` | JWT | CSV download (`text/csv`, not JSON) |
+| `PUT` | `/admin/newsletter/subscribers/:id` | JWT | Update name / status / tags |
+| `DELETE` | `/admin/newsletter/subscribers/:id` | JWT | Hard delete (GDPR erasure) |
+
+---
+
+## Dashboard analytics & newsletter
+
+The analytics and newsletter endpoints are documented in full — with response
+shapes, date-range parameters, and frontend examples — in
+**[DASHBOARD_API.md](./DASHBOARD_API.md)**.
+
+Two things to know here:
+
+- **`GET /admin/orders` now returns pagination totals** alongside `data`, and
+  accepts `search`, `sort`, `direction`, and date-range filtering. `data` is
+  still a bare array of orders, so nothing existing breaks.
+
+  ```jsonc
+  {
+    "ok": true,
+    "data": [ /* Order[] */ ],
+    "pagination": { "total": 137, "limit": 50, "offset": 0, "has_more": true }
+  }
+  ```
+
+- **Only `paid` and `fulfilled` orders count toward revenue** in every analytics
+  figure. `pending` (abandoned checkout) and `cancelled` orders are excluded from
+  sales totals but still appear in the status counts.
+
+These endpoints require migration `0005` — run `npm run db:migrate` before use.
