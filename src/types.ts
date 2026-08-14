@@ -325,6 +325,34 @@ export type SubscriberStats = {
   new_last_30d: number;
 };
 
+// ─── Domain Models — Storefront Settings ──────────────────────────────────────
+
+/**
+ * The looping video in the landing-page header.
+ *
+ * Desktop and mobile are stored separately because they are usually different
+ * crops — but they are often the same file, so `mobile_url` is optional:
+ * when it is null the storefront should fall back to `desktop_url`.
+ */
+export type HeaderVideo = {
+  desktop_url: string | null;
+  /** Null = no separate mobile cut; play `desktop_url` on mobile too. */
+  mobile_url: string | null;
+  /** Still frame shown while the video loads, or if autoplay is blocked. */
+  poster_url: string | null;
+};
+
+/** Public storefront configuration, served by GET /settings. */
+export type StorefrontSettings = {
+  header_video: HeaderVideo;
+};
+
+export type UpdateHeaderVideoInput = {
+  desktop_url?: string | null;
+  mobile_url?: string | null;
+  poster_url?: string | null;
+};
+
 // ─── Domain Models — Analytics ────────────────────────────────────────────────
 
 /** A half-open time window: start inclusive, end exclusive. Both ISO 8601. */
@@ -455,6 +483,12 @@ export interface Database {
   updateDiscount(id: string, input: UpdateDiscountInput): Promise<Discount | null>;
   deleteDiscount(id: string): Promise<boolean>;
   incrementDiscountUsage(id: string): Promise<void>;
+
+  // ── Settings ──
+  /** Returns the stored JSON document for `key`, or null if never set. */
+  getSetting<T>(key: string): Promise<T | null>;
+  /** Creates or replaces the document stored under `key`. */
+  setSetting<T>(key: string, value: T): Promise<T>;
 
   // ── Newsletter ──
   createSubscriber(input: CreateSubscriberInput): Promise<NewsletterSubscriber>;

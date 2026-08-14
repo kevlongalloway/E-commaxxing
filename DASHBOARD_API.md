@@ -1,13 +1,14 @@
-# Dashboard & Newsletter API — Frontend Integration Guide
+# Dashboard, Newsletter & Settings API — Frontend Integration Guide
 
-Everything the admin dashboard needs to render a Shopify-style overview, plus the
-public newsletter signup endpoint for the storefront.
+Everything the admin dashboard needs to render a Shopify-style overview, the
+public newsletter signup endpoint, and the storefront settings that hold the
+landing-page header video.
 
 **Base URL:** `https://<your-worker>.workers.dev`
 
 > **Before this works in production:** run `npm run db:migrate` to apply
-> `migrations/0005_create_newsletter_and_analytics_indexes.sql`. Without it the
-> newsletter endpoints return `500`.
+> migrations `0005` (newsletter + analytics indexes) and `0006` (settings).
+> Without them the newsletter and settings endpoints return `500`.
 
 ---
 
@@ -23,8 +24,9 @@ public newsletter signup endpoint for the storefront.
 8. [`GET /admin/orders`](#get-adminorders-updated) — now paginated, searchable, sortable
 9. [Public newsletter endpoints](#public-newsletter-endpoints)
 10. [Admin newsletter endpoints](#admin-newsletter-endpoints)
-11. [Display helpers](#display-helpers)
-12. [Suggested dashboard layout](#suggested-dashboard-layout)
+11. [Storefront settings — header video](#storefront-settings--header-video)
+12. [Display helpers](#display-helpers)
+13. [Suggested dashboard layout](#suggested-dashboard-layout)
 
 ---
 
@@ -537,6 +539,151 @@ so a later import could add them back.
 
 ---
 
+## Storefront settings — header video
+
+The looping video in the landing-page header. Desktop and mobile are stored
+separately because they are usually different crops — but they are often the same
+file, so **`mobile_url` is optional: when it is `null`, play `desktop_url` on
+mobile too.**
+
+`poster_url` is a still frame shown while the video loads, or if the browser
+blocks autoplay. Optional, but worth setting — it is what the visitor sees for the
+first few hundred milliseconds, and it is your Largest Contentful Paint element.
+
+### `GET /settings` (public, no auth)
+
+One call for all public storefront configuration.
+
+```jsonc
+{
+  "ok": true,
+  "data": {
+    "header_video": {
+      "desktop_url": "https://cdn.example.com/hero-desktop.mp4",
+      "mobile_url":  "https://cdn.example.com/hero-mobile.mp4",  // null = use desktop
+      "poster_url":  "https://cdn.example.com/hero.jpg"          // null = none set
+    }
+  }
+}
+```
+
+All three fields are `null` when nothing has been configured — the endpoint never
+404s, so render your static fallback header when `desktop_url` is `null`.
+
+Responses carry `Cache-Control: public, max-age=60`. After changing the video in
+the admin panel, expect up to a minute before every visitor sees it.
+
+### Rendering it
+
+`<source media="…">` is evaluated only at load time — it does **not** re-evaluate
+when the viewport is resized or the device is rotated. Pick the URL in JS:
+
+```jsx
+function HeaderVideo({ headerVideo }) {
+  const { desktop_url, mobile_url, poster_url } = headerVideo;
+
+  // `?? desktop_url` is the "same video on both" case.
+  const isMobile = useMediaQuery('(max-width: 768px)');
+  const src = isMobile ? (mobile_url ?? desktop_url) : desktop_url;
+
+  if (!src) return <StaticHeader />;   // nothing configured yet
+
+  return (
+    <video
+      key={src}                 // force a reload when the source switches
+      src={src}
+      poster={poster_url ?? undefined}
+      autoPlay loop muted playsInline   // muted + playsInline are REQUIRED for
+      preload="metadata"                // autoplay to work on iOS Safari
+      aria-hidden="true"                // decorative — keep it out of the a11y tree
+    />
+  );
+}
+```
+
+Plain HTML equivalent, if you would rather not switch at runtime:
+
+```html
+<video autoplay loop muted playsinline poster="{poster_url}">
+  <source src="{mobile_url ?? desktop_url}" media="(max-width: 768px)" type="video/mp4">
+  <source src="{desktop_url}" type="video/mp4">
+</video>
+```
+
+Respect `prefers-reduced-motion` — show the poster instead of autoplaying for
+users who have asked for less movement.
+
+### `GET /admin/settings` · `GET /admin/settings/header-video` (JWT)
+
+The first returns the same payload as the public `GET /settings`; the second
+returns just the `header_video` object, for the settings form.
+
+### `PUT /admin/settings/header-video` (JWT)
+
+Partial update — **omit a field to leave it unchanged, send `null` to clear it.**
+Sending an empty body `{}` is a `422`.
+
+```jsonc
+// Set all three
+{ "desktop_url": "https://cdn.example.com/hero-desktop.mp4",
+  "mobile_url":  "https://cdn.example.com/hero-mobile.mp4",
+  "poster_url":  "https://cdn.example.com/hero.jpg" }
+
+// Swap only the desktop cut — mobile and poster are untouched
+{ "desktop_url": "https://cdn.example.com/hero-desktop-v2.mp4" }
+
+// "Use the same video on mobile" — clear the mobile override
+{ "mobile_url": null }
+```
+
+Returns the full object after the update:
+
+```jsonc
+{ "ok": true, "data": { "desktop_url": "…", "mobile_url": null, "poster_url": "…" } }
+```
+
+URLs must be valid and use `http` or `https`. Other schemes — notably
+`javascript:` — are rejected with `422`, since these values land in a `src`
+attribute:
+
+```jsonc
+{ "ok": false, "error": "Validation failed",
+  "details": { "fieldErrors": { "desktop_url": ["URL must use http or https"] } } }
+```
+
+### `DELETE /admin/settings/header-video` (JWT)
+
+Clears all three URLs at once, so the storefront falls back to its static header.
+Returns the cleared object.
+
+### Admin form UX
+
+```javascript
+// "Use the same video on mobile" checkbox
+const save = async (form) => {
+  const { data } = await adminFetch('/admin/settings/header-video', {
+    method: 'PUT',
+    body: JSON.stringify({
+      desktop_url: form.desktopUrl || null,
+      mobile_url: form.sameOnMobile ? null : (form.mobileUrl || null),
+      poster_url: form.posterUrl || null,
+    }),
+  });
+  return data;
+};
+
+// Checkbox state on load: mobile_url === null means "same video everywhere"
+const sameOnMobile = headerVideo.mobile_url === null;
+```
+
+> **Where do the URLs come from?** This endpoint stores links — it does not host
+> the files. Use Cloudflare Stream, Mux, or a public R2 bucket. Note that the
+> existing `POST /admin/images/upload` accepts images only
+> (`jpeg`/`png`/`webp`/`gif`) and will reject an MP4, so video uploads have to go
+> through your host's own uploader for now.
+
+---
+
 ## Display helpers
 
 ```javascript
@@ -629,3 +776,8 @@ One `GET /admin/analytics/dashboard` call fills this entire page.
 | `GET` | `/admin/newsletter/export` | JWT | CSV download (`text/csv`) |
 | `PUT` | `/admin/newsletter/subscribers/:id` | JWT | Update name / status / tags |
 | `DELETE` | `/admin/newsletter/subscribers/:id` | JWT | Hard delete (GDPR erasure) |
+| `GET` | `/settings` | — | Public storefront settings (header video) |
+| `GET` | `/admin/settings` | JWT | All settings |
+| `GET` | `/admin/settings/header-video` | JWT | Header video only |
+| `PUT` | `/admin/settings/header-video` | JWT | Set desktop / mobile / poster URLs |
+| `DELETE` | `/admin/settings/header-video` | JWT | Clear all three URLs |

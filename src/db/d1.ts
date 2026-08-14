@@ -972,6 +972,37 @@ export class D1Database implements Database {
     return counts;
   }
 
+  // ── Settings ─────────────────────────────────────────────────────────────────
+
+  async getSetting<T>(key: string): Promise<T | null> {
+    const row = await this.db
+      .prepare("SELECT value FROM settings WHERE key = ?1")
+      .bind(key)
+      .first<{ value: string }>();
+
+    if (!row) return null;
+
+    try {
+      return JSON.parse(row.value) as T;
+    } catch {
+      // A malformed row shouldn't take the storefront down — treat it as unset.
+      console.error(`Setting "${key}" holds invalid JSON; ignoring it.`);
+      return null;
+    }
+  }
+
+  async setSetting<T>(key: string, value: T): Promise<T> {
+    await this.db
+      .prepare(
+        `INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3`
+      )
+      .bind(key, JSON.stringify(value), new Date().toISOString())
+      .run();
+
+    return value;
+  }
+
   // ── Newsletter ───────────────────────────────────────────────────────────────
 
   async createSubscriber(input: CreateSubscriberInput): Promise<NewsletterSubscriber> {

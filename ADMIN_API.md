@@ -1032,6 +1032,10 @@ DELETE /admin/discounts/:id
 | `GET` | `/admin/newsletter/export` | JWT | CSV download (`text/csv`, not JSON) |
 | `PUT` | `/admin/newsletter/subscribers/:id` | JWT | Update name / status / tags |
 | `DELETE` | `/admin/newsletter/subscribers/:id` | JWT | Hard delete (GDPR erasure) |
+| `GET` | `/admin/settings` | JWT | All storefront settings |
+| `GET` | `/admin/settings/header-video` | JWT | Landing-page header video |
+| `PUT` | `/admin/settings/header-video` | JWT | Set desktop / mobile / poster URLs |
+| `DELETE` | `/admin/settings/header-video` | JWT | Clear all three URLs |
 
 ---
 
@@ -1060,3 +1064,36 @@ Two things to know here:
   sales totals but still appear in the status counts.
 
 These endpoints require migration `0005` — run `npm run db:migrate` before use.
+
+---
+
+## Storefront settings — header video
+
+Stores the looping video shown in the landing-page header. Desktop and mobile are
+separate URLs because they are usually different crops; when the same file is used
+everywhere, set `desktop_url` and leave `mobile_url` null.
+
+```
+PUT /admin/settings/header-video
+```
+
+Partial update — omit a field to leave it unchanged, send `null` to clear it:
+
+```jsonc
+{ "desktop_url": "https://cdn.example.com/hero-desktop.mp4",
+  "mobile_url":  null,                                        // = same as desktop
+  "poster_url":  "https://cdn.example.com/hero.jpg" }
+```
+
+Returns the full object. URLs must use `http` or `https` — other schemes (notably
+`javascript:`) are rejected with `422`, because these values are rendered into a
+`src` attribute.
+
+`DELETE /admin/settings/header-video` clears all three at once. The public
+storefront reads the same data from `GET /settings`, cached for 60 seconds.
+
+This endpoint stores **links** — it does not host files. `POST /admin/images/upload`
+accepts images only (`jpeg`/`png`/`webp`/`gif`) and will reject an MP4, so host the
+video on Cloudflare Stream, Mux, or a public R2 bucket and paste the URL here.
+
+Requires migration `0006`.

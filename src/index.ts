@@ -19,6 +19,8 @@ import { discountValidate } from "./routes/discountValidate.js";
 import { analytics } from "./routes/analytics.js";
 import { newsletter } from "./routes/newsletter.js";
 import { newsletterAdmin } from "./routes/newsletterAdmin.js";
+import { settings } from "./routes/settings.js";
+import { settingsAdmin } from "./routes/settingsAdmin.js";
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -70,6 +72,9 @@ app.route("/discounts", discountValidate);
 // Public newsletter signup / unsubscribe (storefront footer, popup, checkout)
 app.route("/newsletter", newsletter);
 
+// Public storefront settings (landing-page header video)
+app.route("/settings", settings);
+
 // ─── Admin Routes ─────────────────────────────────────────────────────────────
 
 // Login is public — no auth required.
@@ -100,6 +105,9 @@ app.route("/admin/analytics", analytics);
 
 // Newsletter subscriber management + CSV export (admin only)
 app.route("/admin/newsletter", newsletterAdmin);
+
+// Storefront settings — header video (admin only)
+app.route("/admin/settings", settingsAdmin);
 
 // ─── 404 Handler ─────────────────────────────────────────────────────────────
 

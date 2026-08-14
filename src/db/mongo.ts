@@ -57,6 +57,11 @@ type MongoSubscriberDoc = Omit<NewsletterSubscriber, "id"> & { _id: string };
 
 type SubscriberCollectionType = import("mongodb").Collection<MongoSubscriberDoc>;
 
+/** Key/value storefront settings — `_id` is the setting key. */
+type MongoSettingDoc = { _id: string; value: unknown; updated_at: string };
+
+type SettingCollectionType = import("mongodb").Collection<MongoSettingDoc>;
+
 let _client: MongoClientType | null = null;
 
 async function getClient(uri: string): Promise<MongoClientType> {
@@ -95,6 +100,11 @@ export class MongoDatabase implements Database {
   private async discountCol(): Promise<DiscountCollectionType> {
     const client = await getClient(this.uri);
     return client.db(this.dbName).collection<MongoDiscountDoc>("discounts");
+  }
+
+  private async settingCol(): Promise<SettingCollectionType> {
+    const client = await getClient(this.uri);
+    return client.db(this.dbName).collection<MongoSettingDoc>("settings");
   }
 
   private async subscriberCol(): Promise<SubscriberCollectionType> {
@@ -787,6 +797,24 @@ export class MongoDatabase implements Database {
     }
 
     return counts;
+  }
+
+  // ── Settings ─────────────────────────────────────────────────────────────────
+
+  async getSetting<T>(key: string): Promise<T | null> {
+    const col = await this.settingCol();
+    const doc = await col.findOne({ _id: key });
+    return doc ? (doc.value as T) : null;
+  }
+
+  async setSetting<T>(key: string, value: T): Promise<T> {
+    const col = await this.settingCol();
+    await col.updateOne(
+      { _id: key },
+      { $set: { value, updated_at: new Date().toISOString() } },
+      { upsert: true }
+    );
+    return value;
   }
 
   // ── Newsletter ───────────────────────────────────────────────────────────────

@@ -18,6 +18,7 @@ A fully-featured e-commerce API backend running on **Cloudflare Workers** (serve
 | **Public API** | Read-only product catalog |
 | **Dashboard analytics** | Sales, orders, AOV, top products, period-over-period deltas |
 | **Newsletter** | Public signup endpoint + admin subscriber list and CSV export |
+| **Storefront settings** | Landing-page header video (separate desktop / mobile URLs) |
 
 ---
 
@@ -185,10 +186,11 @@ Prices are always in the **smallest currency unit** (cents for USD, pence for GB
 
 ---
 
-> **Dashboard & newsletter endpoints** — `/admin/analytics/*`, `/admin/newsletter/*`,
-> and the public `/newsletter/*` routes are documented in full in
-> [DASHBOARD_API.md](./DASHBOARD_API.md). They require migration `0005`
-> (`npm run db:migrate`).
+> **Dashboard, newsletter & settings endpoints** — `/admin/analytics/*`,
+> `/admin/newsletter/*`, `/admin/settings/*`, and the public `/newsletter/*` and
+> `/settings` routes are documented in full in
+> [DASHBOARD_API.md](./DASHBOARD_API.md). They require migrations `0005` and
+> `0006` (`npm run db:migrate`).
 
 ---
 
