@@ -16,6 +16,11 @@ import { shipping } from "./routes/shipping.js";
 import { orderStatus } from "./routes/orderStatus.js";
 import { discounts } from "./routes/discounts.js";
 import { discountValidate } from "./routes/discountValidate.js";
+import { analytics } from "./routes/analytics.js";
+import { newsletter } from "./routes/newsletter.js";
+import { newsletterAdmin } from "./routes/newsletterAdmin.js";
+import { settings } from "./routes/settings.js";
+import { settingsAdmin } from "./routes/settingsAdmin.js";
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -39,7 +44,7 @@ app.get("/", (c) =>
     ok: true,
     data: {
       service: "e-commaxxing",
-      version: "1.1.0",
+      version: "1.2.0",
       db: c.env.DB_ADAPTER ?? "d1",
     },
   })
@@ -63,6 +68,12 @@ app.route("/orders", orderStatus);
 
 // Public discount validation (customer enters code before checkout)
 app.route("/discounts", discountValidate);
+
+// Public newsletter signup / unsubscribe (storefront footer, popup, checkout)
+app.route("/newsletter", newsletter);
+
+// Public storefront settings (landing-page header video)
+app.route("/settings", settings);
 
 // ─── Admin Routes ─────────────────────────────────────────────────────────────
 
@@ -88,6 +99,15 @@ app.route("/admin/discounts", discounts);
 
 // Shipping label generation per order (admin only)
 app.route("/admin/orders", shipping);
+
+// Dashboard analytics — sales, orders, top products (admin only)
+app.route("/admin/analytics", analytics);
+
+// Newsletter subscriber management + CSV export (admin only)
+app.route("/admin/newsletter", newsletterAdmin);
+
+// Storefront settings — header video (admin only)
+app.route("/admin/settings", settingsAdmin);
 
 // ─── 404 Handler ─────────────────────────────────────────────────────────────
 

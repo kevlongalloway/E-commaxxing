@@ -180,11 +180,22 @@ export type UpdateOrderInput = {
   metadata?: Record<string, unknown>;
 };
 
+export type OrderSortField = "created_at" | "amount_total";
+export type SortDirection = "asc" | "desc";
+
 export type OrderQueryOptions = {
   limit?: number;
   offset?: number;
   status?: OrderStatus;
   fulfillment_status?: FulfillmentStatus;
+  /** Inclusive lower bound on created_at (ISO 8601). */
+  start_date?: string;
+  /** Exclusive upper bound on created_at (ISO 8601). */
+  end_date?: string;
+  /** Case-insensitive substring match on customer email, name, or order ID. */
+  search?: string;
+  sort?: OrderSortField;
+  direction?: SortDirection;
 };
 
 // ─── Domain Models — Discounts ────────────────────────────────────────────────
@@ -257,6 +268,173 @@ export type AppliedDiscount = {
   final_amount: number;
 };
 
+// ─── Domain Models — Newsletter ───────────────────────────────────────────────
+
+export type SubscriberStatus = "subscribed" | "unsubscribed";
+
+export type NewsletterSubscriber = {
+  id: string;
+  /** Always stored lowercased and trimmed. */
+  email: string;
+  name: string | null;
+  status: SubscriberStatus;
+  /** Where the signup came from, e.g. "footer", "popup", "checkout". */
+  source: string;
+  tags: string[];
+  metadata: Record<string, unknown>;
+  /** ISO 3166-1 alpha-2 country from the Cloudflare edge, when available. */
+  country: string | null;
+  /** Unguessable token for one-click unsubscribe links. */
+  unsubscribe_token: string;
+  subscribed_at: string;
+  unsubscribed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CreateSubscriberInput = {
+  email: string;
+  name?: string | null;
+  source?: string;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
+  country?: string | null;
+};
+
+export type UpdateSubscriberInput = {
+  name?: string | null;
+  status?: SubscriberStatus;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
+};
+
+export type SubscriberQueryOptions = {
+  limit?: number;
+  offset?: number;
+  status?: SubscriberStatus;
+  source?: string;
+  /** Case-insensitive substring match on email or name. */
+  search?: string;
+};
+
+export type SubscriberStats = {
+  total: number;
+  subscribed: number;
+  unsubscribed: number;
+  /** Signups in the last 30 days. */
+  new_last_30d: number;
+};
+
+// ─── Domain Models — Storefront Settings ──────────────────────────────────────
+
+/**
+ * The looping video in the landing-page header.
+ *
+ * Desktop and mobile are stored separately because they are usually different
+ * crops — but they are often the same file, so `mobile_url` is optional:
+ * when it is null the storefront should fall back to `desktop_url`.
+ */
+export type HeaderVideo = {
+  desktop_url: string | null;
+  /** Null = no separate mobile cut; play `desktop_url` on mobile too. */
+  mobile_url: string | null;
+  /** Still frame shown while the video loads, or if autoplay is blocked. */
+  poster_url: string | null;
+};
+
+/** Public storefront configuration, served by GET /settings. */
+export type StorefrontSettings = {
+  header_video: HeaderVideo;
+};
+
+export type UpdateHeaderVideoInput = {
+  desktop_url?: string | null;
+  mobile_url?: string | null;
+  poster_url?: string | null;
+};
+
+// ─── Domain Models — Analytics ────────────────────────────────────────────────
+
+/** A half-open time window: start inclusive, end exclusive. Both ISO 8601. */
+export type DateRange = {
+  start: string;
+  end: string;
+};
+
+/** Bucket size for the sales-over-time chart. */
+export type TimeseriesInterval = "hour" | "day" | "week" | "month";
+
+/**
+ * Aggregate sales figures for a date range.
+ * All money values are in the smallest currency unit (cents).
+ *
+ * Only orders with status "paid" or "fulfilled" count toward revenue —
+ * "pending" (checkout started, never completed) and "cancelled" are excluded.
+ */
+export type SalesMetrics = {
+  /** Sum of amount_total — what customers actually paid. */
+  total_sales: number;
+  /** total_sales + discounts — revenue before discounts were applied. */
+  gross_sales: number;
+  /** Sum of discount_amount across counted orders. */
+  discounts: number;
+  /** Number of revenue-counting orders. */
+  orders: number;
+  /** Sum of line-item quantities across counted orders. */
+  units_sold: number;
+  /** total_sales / orders, rounded to the nearest cent. 0 when no orders. */
+  average_order_value: number;
+  /** Distinct customer emails that placed a counted order in the range. */
+  customers: number;
+  /** Customers whose first-ever paid order landed inside this range. */
+  new_customers: number;
+};
+
+/** One point on the sales-over-time chart. */
+export type TimeseriesPoint = {
+  /**
+   * Bucket key in the requested timezone:
+   *   hour  → "2026-08-14T09:00"
+   *   day   → "2026-08-14"
+   *   week  → "2026-08-10"  (the Monday starting that week)
+   *   month → "2026-08"
+   */
+  bucket: string;
+  total_sales: number;
+  orders: number;
+  units_sold: number;
+};
+
+/** One row of the "top products" table. */
+export type TopProduct = {
+  product_id: string;
+  product_name: string;
+  units_sold: number;
+  /** Line-item revenue (unit price × quantity), pre-discount. */
+  total_revenue: number;
+  /** Number of distinct orders containing this product. */
+  orders: number;
+};
+
+export type TopProductSort = "units" | "revenue";
+
+/** Order counts by payment status and fulfillment status. */
+export type OrderStatusCounts = {
+  pending: number;
+  paid: number;
+  fulfilled: number;
+  cancelled: number;
+  unfulfilled: number;
+  processing: number;
+  shipped: number;
+  delivered: number;
+};
+
+export type AnalyticsQueryOptions = {
+  /** Minutes to shift UTC by when bucketing, e.g. -420 for UTC-07:00. */
+  tz_offset_minutes?: number;
+};
+
 // ─── Database Adapter Interface ───────────────────────────────────────────────
 
 export type ProductQueryOptions = {
@@ -281,7 +459,20 @@ export interface Database {
   getOrderByStripeSession(sessionId: string): Promise<Order | null>;
   getOrderByStripeIntent(intentId: string): Promise<Order | null>;
   getOrders(options?: OrderQueryOptions): Promise<Order[]>;
+  /** Total number of orders matching the same filters, ignoring limit/offset. */
+  countOrders(options?: OrderQueryOptions): Promise<number>;
   updateOrder(id: string, input: UpdateOrderInput): Promise<Order | null>;
+
+  // ── Analytics ──
+  getSalesMetrics(range: DateRange): Promise<SalesMetrics>;
+  getSalesTimeseries(
+    range: DateRange,
+    interval: TimeseriesInterval,
+    tzOffsetMinutes: number
+  ): Promise<TimeseriesPoint[]>;
+  getTopProducts(range: DateRange, limit: number, sort: TopProductSort): Promise<TopProduct[]>;
+  /** Status counts. Pass a range to scope them, or omit for all-time. */
+  getOrderStatusCounts(range?: DateRange): Promise<OrderStatusCounts>;
 
   // ── Discounts ──
   createDiscount(input: CreateDiscountInput): Promise<Discount>;
@@ -292,6 +483,23 @@ export interface Database {
   updateDiscount(id: string, input: UpdateDiscountInput): Promise<Discount | null>;
   deleteDiscount(id: string): Promise<boolean>;
   incrementDiscountUsage(id: string): Promise<void>;
+
+  // ── Settings ──
+  /** Returns the stored JSON document for `key`, or null if never set. */
+  getSetting<T>(key: string): Promise<T | null>;
+  /** Creates or replaces the document stored under `key`. */
+  setSetting<T>(key: string, value: T): Promise<T>;
+
+  // ── Newsletter ──
+  createSubscriber(input: CreateSubscriberInput): Promise<NewsletterSubscriber>;
+  getSubscriber(id: string): Promise<NewsletterSubscriber | null>;
+  getSubscriberByEmail(email: string): Promise<NewsletterSubscriber | null>;
+  getSubscriberByToken(token: string): Promise<NewsletterSubscriber | null>;
+  getSubscribers(options?: SubscriberQueryOptions): Promise<NewsletterSubscriber[]>;
+  countSubscribers(options?: SubscriberQueryOptions): Promise<number>;
+  updateSubscriber(id: string, input: UpdateSubscriberInput): Promise<NewsletterSubscriber | null>;
+  deleteSubscriber(id: string): Promise<boolean>;
+  getSubscriberStats(): Promise<SubscriberStats>;
 }
 
 // ─── Discount calculation helper ──────────────────────────────────────────────

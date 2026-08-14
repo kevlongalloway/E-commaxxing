@@ -18,7 +18,23 @@ import type {
   DiscountQueryOptions,
   DiscountType,
   DiscountAppliesTo,
+  DateRange,
+  SalesMetrics,
+  TimeseriesInterval,
+  TimeseriesPoint,
+  TopProduct,
+  TopProductSort,
+  OrderStatusCounts,
+  NewsletterSubscriber,
+  CreateSubscriberInput,
+  UpdateSubscriberInput,
+  SubscriberQueryOptions,
+  SubscriberStats,
+  SubscriberStatus,
 } from "../types.js";
+
+/** Order statuses that count toward revenue. Pending/cancelled never do. */
+const REVENUE_STATUS_SQL = "('paid', 'fulfilled')";
 
 // ─── Product row shape from D1 ────────────────────────────────────────────────
 
@@ -109,6 +125,31 @@ type OrderItemRow = {
   quantity: number;
   currency: string;
 };
+
+type SubscriberRow = {
+  id: string;
+  email: string;
+  name: string | null;
+  status: string;
+  source: string;
+  tags: string;      // JSON string
+  metadata: string;  // JSON string
+  country: string | null;
+  unsubscribe_token: string;
+  subscribed_at: string;
+  unsubscribed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+function rowToSubscriber(row: SubscriberRow): NewsletterSubscriber {
+  return {
+    ...row,
+    status: row.status as SubscriberStatus,
+    tags: JSON.parse(row.tags) as string[],
+    metadata: JSON.parse(row.metadata) as Record<string, unknown>,
+  };
+}
 
 function rowToOrder(row: OrderRow, items: OrderItemRow[]): Order {
   return {
@@ -312,7 +353,7 @@ export class D1Database implements Database {
             metadata, notes, created_at, updated_at)
          VALUES
            (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)`
+            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)`
       )
       .bind(
         id,
@@ -442,27 +483,62 @@ export class D1Database implements Database {
     return rowToOrder(row, items ?? []);
   }
 
-  async getOrders(options: OrderQueryOptions = {}): Promise<Order[]> {
-    const { limit = 50, offset = 0, status, fulfillment_status } = options;
-
-    let query = "SELECT * FROM orders";
+  /**
+   * Builds the shared WHERE clause for order listing and counting, so
+   * `getOrders` and `countOrders` can never drift apart.
+   */
+  private buildOrderFilter(options: OrderQueryOptions): {
+    where: string;
+    bindings: unknown[];
+  } {
     const conditions: string[] = [];
     const bindings: unknown[] = [];
 
-    if (status) {
+    if (options.status) {
       conditions.push(`status = ?${bindings.length + 1}`);
-      bindings.push(status);
+      bindings.push(options.status);
     }
-    if (fulfillment_status) {
+    if (options.fulfillment_status) {
       conditions.push(`fulfillment_status = ?${bindings.length + 1}`);
-      bindings.push(fulfillment_status);
+      bindings.push(options.fulfillment_status);
+    }
+    if (options.start_date) {
+      conditions.push(`created_at >= ?${bindings.length + 1}`);
+      bindings.push(options.start_date);
+    }
+    if (options.end_date) {
+      conditions.push(`created_at < ?${bindings.length + 1}`);
+      bindings.push(options.end_date);
+    }
+    if (options.search) {
+      const n = bindings.length + 1;
+      conditions.push(
+        `(LOWER(customer_email) LIKE ?${n} OR LOWER(customer_name) LIKE ?${n} ` +
+          `OR LOWER(shipping_name) LIKE ?${n} OR LOWER(id) LIKE ?${n} ` +
+          `OR LOWER(tracking_number) LIKE ?${n})`
+      );
+      bindings.push(`%${options.search.toLowerCase()}%`);
     }
 
-    if (conditions.length > 0) {
-      query += " WHERE " + conditions.join(" AND ");
-    }
+    return {
+      where: conditions.length > 0 ? " WHERE " + conditions.join(" AND ") : "",
+      bindings,
+    };
+  }
 
-    query += ` ORDER BY created_at DESC LIMIT ?${bindings.length + 1} OFFSET ?${bindings.length + 2}`;
+  async getOrders(options: OrderQueryOptions = {}): Promise<Order[]> {
+    const { limit = 50, offset = 0, sort = "created_at", direction = "desc" } = options;
+
+    const { where, bindings } = this.buildOrderFilter(options);
+
+    // Whitelisted — never interpolate caller input into SQL.
+    const sortColumn = sort === "amount_total" ? "amount_total" : "created_at";
+    const sortDirection = direction === "asc" ? "ASC" : "DESC";
+
+    const query =
+      `SELECT * FROM orders${where}` +
+      ` ORDER BY ${sortColumn} ${sortDirection}` +
+      ` LIMIT ?${bindings.length + 1} OFFSET ?${bindings.length + 2}`;
     bindings.push(limit, offset);
 
     const { results: orderRows } = await this.db
@@ -489,6 +565,15 @@ export class D1Database implements Database {
     }
 
     return orderRows.map((row) => rowToOrder(row, itemsByOrder.get(row.id) ?? []));
+  }
+
+  async countOrders(options: OrderQueryOptions = {}): Promise<number> {
+    const { where, bindings } = this.buildOrderFilter(options);
+    const row = await this.db
+      .prepare(`SELECT COUNT(*) AS count FROM orders${where}`)
+      .bind(...bindings)
+      .first<{ count: number }>();
+    return row?.count ?? 0;
   }
 
   async updateOrder(id: string, input: UpdateOrderInput): Promise<Order | null> {
@@ -674,6 +759,448 @@ export class D1Database implements Database {
       .prepare("UPDATE discounts SET usage_count = usage_count + 1, updated_at = ?1 WHERE id = ?2")
       .bind(new Date().toISOString(), id)
       .run();
+  }
+
+  // ── Analytics ────────────────────────────────────────────────────────────────
+
+  async getSalesMetrics(range: DateRange): Promise<SalesMetrics> {
+    const { start, end } = range;
+
+    // Three aggregates: order-level money, item-level units, first-order dates.
+    // Units live in a child table, so summing them alongside amount_total in a
+    // single joined query would multiply revenue by the line-item count.
+    const [totals, units, newCustomers] = await this.db.batch<Record<string, number>>([
+      this.db
+        .prepare(
+          `SELECT
+             COUNT(*)                              AS orders,
+             COALESCE(SUM(amount_total), 0)        AS total_sales,
+             COALESCE(SUM(discount_amount), 0)     AS discounts,
+             COUNT(DISTINCT customer_email)        AS customers
+           FROM orders
+           WHERE status IN ${REVENUE_STATUS_SQL}
+             AND created_at >= ?1 AND created_at < ?2`
+        )
+        .bind(start, end),
+      this.db
+        .prepare(
+          `SELECT COALESCE(SUM(oi.quantity), 0) AS units_sold
+           FROM order_items oi
+           JOIN orders o ON o.id = oi.order_id
+           WHERE o.status IN ${REVENUE_STATUS_SQL}
+             AND o.created_at >= ?1 AND o.created_at < ?2`
+        )
+        .bind(start, end),
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS new_customers FROM (
+             SELECT customer_email, MIN(created_at) AS first_order
+             FROM orders
+             WHERE status IN ${REVENUE_STATUS_SQL} AND customer_email IS NOT NULL
+             GROUP BY customer_email
+           )
+           WHERE first_order >= ?1 AND first_order < ?2`
+        )
+        .bind(start, end),
+    ]);
+
+    const t = totals?.results?.[0] ?? {};
+    const orders = Number(t.orders ?? 0);
+    const total_sales = Number(t.total_sales ?? 0);
+    const discounts = Number(t.discounts ?? 0);
+
+    return {
+      total_sales,
+      gross_sales: total_sales + discounts,
+      discounts,
+      orders,
+      units_sold: Number(units?.results?.[0]?.units_sold ?? 0),
+      average_order_value: orders > 0 ? Math.round(total_sales / orders) : 0,
+      customers: Number(t.customers ?? 0),
+      new_customers: Number(newCustomers?.results?.[0]?.new_customers ?? 0),
+    };
+  }
+
+  async getSalesTimeseries(
+    range: DateRange,
+    interval: TimeseriesInterval,
+    tzOffsetMinutes: number
+  ): Promise<TimeseriesPoint[]> {
+    const { start, end } = range;
+    // SQLite datetime() modifier, e.g. "-420 minutes" for UTC-07:00.
+    const shift = `${tzOffsetMinutes >= 0 ? "+" : ""}${tzOffsetMinutes} minutes`;
+
+    // Built from a whitelist — `interval` never reaches SQL as raw text.
+    const bucketExpr = (column: string): string => {
+      switch (interval) {
+        case "hour":
+          return `strftime('%Y-%m-%dT%H:00', datetime(${column}, ?3))`;
+        case "week":
+          // Back up 6 days, then jump forward to Monday → Monday of that week.
+          return `date(datetime(${column}, ?3), '-6 days', 'weekday 1')`;
+        case "month":
+          return `strftime('%Y-%m', datetime(${column}, ?3))`;
+        case "day":
+        default:
+          return `date(datetime(${column}, ?3))`;
+      }
+    };
+
+    const [sales, units] = await this.db.batch<Record<string, string | number>>([
+      this.db
+        .prepare(
+          `SELECT ${bucketExpr("created_at")} AS bucket,
+                  COUNT(*)                       AS orders,
+                  COALESCE(SUM(amount_total), 0) AS total_sales
+           FROM orders
+           WHERE status IN ${REVENUE_STATUS_SQL}
+             AND created_at >= ?1 AND created_at < ?2
+           GROUP BY bucket
+           ORDER BY bucket ASC`
+        )
+        .bind(start, end, shift),
+      this.db
+        .prepare(
+          `SELECT ${bucketExpr("o.created_at")} AS bucket,
+                  COALESCE(SUM(oi.quantity), 0) AS units_sold
+           FROM order_items oi
+           JOIN orders o ON o.id = oi.order_id
+           WHERE o.status IN ${REVENUE_STATUS_SQL}
+             AND o.created_at >= ?1 AND o.created_at < ?2
+           GROUP BY bucket`
+        )
+        .bind(start, end, shift),
+    ]);
+
+    const unitsByBucket = new Map<string, number>();
+    for (const row of units?.results ?? []) {
+      unitsByBucket.set(String(row.bucket), Number(row.units_sold ?? 0));
+    }
+
+    return (sales?.results ?? []).map((row) => {
+      const bucket = String(row.bucket);
+      return {
+        bucket,
+        total_sales: Number(row.total_sales ?? 0),
+        orders: Number(row.orders ?? 0),
+        units_sold: unitsByBucket.get(bucket) ?? 0,
+      };
+    });
+  }
+
+  async getTopProducts(
+    range: DateRange,
+    limit: number,
+    sort: TopProductSort
+  ): Promise<TopProduct[]> {
+    // Whitelisted sort column.
+    const orderBy = sort === "revenue" ? "total_revenue" : "units_sold";
+
+    const { results } = await this.db
+      .prepare(
+        `SELECT
+           oi.product_id                          AS product_id,
+           MAX(oi.product_name)                   AS product_name,
+           COALESCE(SUM(oi.quantity), 0)          AS units_sold,
+           COALESCE(SUM(oi.price * oi.quantity), 0) AS total_revenue,
+           COUNT(DISTINCT oi.order_id)            AS orders
+         FROM order_items oi
+         JOIN orders o ON o.id = oi.order_id
+         WHERE o.status IN ${REVENUE_STATUS_SQL}
+           AND o.created_at >= ?1 AND o.created_at < ?2
+         GROUP BY oi.product_id
+         ORDER BY ${orderBy} DESC
+         LIMIT ?3`
+      )
+      .bind(range.start, range.end, limit)
+      .all<{
+        product_id: string;
+        product_name: string;
+        units_sold: number;
+        total_revenue: number;
+        orders: number;
+      }>();
+
+    return (results ?? []).map((row) => ({
+      product_id: row.product_id,
+      product_name: row.product_name,
+      units_sold: Number(row.units_sold),
+      total_revenue: Number(row.total_revenue),
+      orders: Number(row.orders),
+    }));
+  }
+
+  async getOrderStatusCounts(range?: DateRange): Promise<OrderStatusCounts> {
+    const rangeClause = range ? " AND created_at >= ?1 AND created_at < ?2" : "";
+    const bindings = range ? [range.start, range.end] : [];
+
+    const [byStatus, byFulfillment] = await this.db.batch<{
+      key: string;
+      count: number;
+    }>([
+      this.db
+        .prepare(`SELECT status AS key, COUNT(*) AS count FROM orders WHERE 1 = 1${rangeClause} GROUP BY status`)
+        .bind(...bindings),
+      // Fulfillment counts only make sense for orders that were actually paid —
+      // an abandoned checkout is not an order waiting to be shipped.
+      this.db
+        .prepare(
+          `SELECT fulfillment_status AS key, COUNT(*) AS count FROM orders
+           WHERE status IN ${REVENUE_STATUS_SQL}${rangeClause}
+           GROUP BY fulfillment_status`
+        )
+        .bind(...bindings),
+    ]);
+
+    const counts: OrderStatusCounts = {
+      pending: 0,
+      paid: 0,
+      fulfilled: 0,
+      cancelled: 0,
+      unfulfilled: 0,
+      processing: 0,
+      shipped: 0,
+      delivered: 0,
+    };
+
+    for (const row of [...(byStatus?.results ?? []), ...(byFulfillment?.results ?? [])]) {
+      if (row.key in counts) {
+        counts[row.key as keyof OrderStatusCounts] = Number(row.count);
+      }
+    }
+
+    return counts;
+  }
+
+  // ── Settings ─────────────────────────────────────────────────────────────────
+
+  async getSetting<T>(key: string): Promise<T | null> {
+    const row = await this.db
+      .prepare("SELECT value FROM settings WHERE key = ?1")
+      .bind(key)
+      .first<{ value: string }>();
+
+    if (!row) return null;
+
+    try {
+      return JSON.parse(row.value) as T;
+    } catch {
+      // A malformed row shouldn't take the storefront down — treat it as unset.
+      console.error(`Setting "${key}" holds invalid JSON; ignoring it.`);
+      return null;
+    }
+  }
+
+  async setSetting<T>(key: string, value: T): Promise<T> {
+    await this.db
+      .prepare(
+        `INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3`
+      )
+      .bind(key, JSON.stringify(value), new Date().toISOString())
+      .run();
+
+    return value;
+  }
+
+  // ── Newsletter ───────────────────────────────────────────────────────────────
+
+  async createSubscriber(input: CreateSubscriberInput): Promise<NewsletterSubscriber> {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const email = input.email.trim().toLowerCase();
+
+    const subscriber: NewsletterSubscriber = {
+      id,
+      email,
+      name: input.name ?? null,
+      status: "subscribed",
+      source: input.source ?? "website",
+      tags: input.tags ?? [],
+      metadata: input.metadata ?? {},
+      country: input.country ?? null,
+      unsubscribe_token: randomUUID().replace(/-/g, ""),
+      subscribed_at: now,
+      unsubscribed_at: null,
+      created_at: now,
+      updated_at: now,
+    };
+
+    await this.db
+      .prepare(
+        `INSERT INTO newsletter_subscribers
+           (id, email, name, status, source, tags, metadata, country,
+            unsubscribe_token, subscribed_at, unsubscribed_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`
+      )
+      .bind(
+        subscriber.id,
+        subscriber.email,
+        subscriber.name,
+        subscriber.status,
+        subscriber.source,
+        JSON.stringify(subscriber.tags),
+        JSON.stringify(subscriber.metadata),
+        subscriber.country,
+        subscriber.unsubscribe_token,
+        subscriber.subscribed_at,
+        subscriber.unsubscribed_at,
+        subscriber.created_at,
+        subscriber.updated_at
+      )
+      .run();
+
+    return subscriber;
+  }
+
+  async getSubscriber(id: string): Promise<NewsletterSubscriber | null> {
+    const row = await this.db
+      .prepare("SELECT * FROM newsletter_subscribers WHERE id = ?1")
+      .bind(id)
+      .first<SubscriberRow>();
+    return row ? rowToSubscriber(row) : null;
+  }
+
+  async getSubscriberByEmail(email: string): Promise<NewsletterSubscriber | null> {
+    const row = await this.db
+      .prepare("SELECT * FROM newsletter_subscribers WHERE email = ?1")
+      .bind(email.trim().toLowerCase())
+      .first<SubscriberRow>();
+    return row ? rowToSubscriber(row) : null;
+  }
+
+  async getSubscriberByToken(token: string): Promise<NewsletterSubscriber | null> {
+    const row = await this.db
+      .prepare("SELECT * FROM newsletter_subscribers WHERE unsubscribe_token = ?1")
+      .bind(token)
+      .first<SubscriberRow>();
+    return row ? rowToSubscriber(row) : null;
+  }
+
+  private buildSubscriberFilter(options: SubscriberQueryOptions): {
+    where: string;
+    bindings: unknown[];
+  } {
+    const conditions: string[] = [];
+    const bindings: unknown[] = [];
+
+    if (options.status) {
+      conditions.push(`status = ?${bindings.length + 1}`);
+      bindings.push(options.status);
+    }
+    if (options.source) {
+      conditions.push(`source = ?${bindings.length + 1}`);
+      bindings.push(options.source);
+    }
+    if (options.search) {
+      const n = bindings.length + 1;
+      conditions.push(`(LOWER(email) LIKE ?${n} OR LOWER(name) LIKE ?${n})`);
+      bindings.push(`%${options.search.toLowerCase()}%`);
+    }
+
+    return {
+      where: conditions.length > 0 ? " WHERE " + conditions.join(" AND ") : "",
+      bindings,
+    };
+  }
+
+  async getSubscribers(options: SubscriberQueryOptions = {}): Promise<NewsletterSubscriber[]> {
+    const { limit = 50, offset = 0 } = options;
+    const { where, bindings } = this.buildSubscriberFilter(options);
+
+    const { results } = await this.db
+      .prepare(
+        `SELECT * FROM newsletter_subscribers${where}` +
+          ` ORDER BY created_at DESC LIMIT ?${bindings.length + 1} OFFSET ?${bindings.length + 2}`
+      )
+      .bind(...bindings, limit, offset)
+      .all<SubscriberRow>();
+
+    return (results ?? []).map(rowToSubscriber);
+  }
+
+  async countSubscribers(options: SubscriberQueryOptions = {}): Promise<number> {
+    const { where, bindings } = this.buildSubscriberFilter(options);
+    const row = await this.db
+      .prepare(`SELECT COUNT(*) AS count FROM newsletter_subscribers${where}`)
+      .bind(...bindings)
+      .first<{ count: number }>();
+    return row?.count ?? 0;
+  }
+
+  async updateSubscriber(
+    id: string,
+    input: UpdateSubscriberInput
+  ): Promise<NewsletterSubscriber | null> {
+    const existing = await this.getSubscriber(id);
+    if (!existing) return null;
+
+    const now = new Date().toISOString();
+    const status = input.status ?? existing.status;
+
+    // Stamp the opt-out moment on the transition, and clear it on re-subscribe.
+    let unsubscribedAt = existing.unsubscribed_at;
+    let subscribedAt = existing.subscribed_at;
+    if (status !== existing.status) {
+      if (status === "unsubscribed") {
+        unsubscribedAt = now;
+      } else {
+        unsubscribedAt = null;
+        subscribedAt = now;
+      }
+    }
+
+    await this.db
+      .prepare(
+        `UPDATE newsletter_subscribers SET
+           name = ?1, status = ?2, tags = ?3, metadata = ?4,
+           subscribed_at = ?5, unsubscribed_at = ?6, updated_at = ?7
+         WHERE id = ?8`
+      )
+      .bind(
+        input.name !== undefined ? input.name : existing.name,
+        status,
+        JSON.stringify(input.tags ?? existing.tags),
+        JSON.stringify(input.metadata ?? existing.metadata),
+        subscribedAt,
+        unsubscribedAt,
+        now,
+        id
+      )
+      .run();
+
+    return this.getSubscriber(id);
+  }
+
+  async deleteSubscriber(id: string): Promise<boolean> {
+    const { meta } = await this.db
+      .prepare("DELETE FROM newsletter_subscribers WHERE id = ?1")
+      .bind(id)
+      .run();
+    return (meta.changes ?? 0) > 0;
+  }
+
+  async getSubscriberStats(): Promise<SubscriberStats> {
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    const row = await this.db
+      .prepare(
+        `SELECT
+           COUNT(*)                                                        AS total,
+           SUM(CASE WHEN status = 'subscribed'   THEN 1 ELSE 0 END)        AS subscribed,
+           SUM(CASE WHEN status = 'unsubscribed' THEN 1 ELSE 0 END)        AS unsubscribed,
+           SUM(CASE WHEN created_at >= ?1        THEN 1 ELSE 0 END)        AS new_last_30d
+         FROM newsletter_subscribers`
+      )
+      .bind(thirtyDaysAgo)
+      .first<Record<string, number | null>>();
+
+    return {
+      total: Number(row?.total ?? 0),
+      subscribed: Number(row?.subscribed ?? 0),
+      unsubscribed: Number(row?.unsubscribed ?? 0),
+      new_last_30d: Number(row?.new_last_30d ?? 0),
+    };
   }
 }
 

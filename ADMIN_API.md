@@ -1023,3 +1023,77 @@ DELETE /admin/discounts/:id
 | `POST` | `/admin/discounts` | JWT | Create discount / sale / promo → `201` |
 | `PUT` | `/admin/discounts/:id` | JWT | Update (cannot change code) |
 | `DELETE` | `/admin/discounts/:id` | JWT | Delete discount |
+| `GET` | `/admin/analytics/dashboard` | JWT | Whole overview page in one call |
+| `GET` | `/admin/analytics/overview` | JWT | KPI cards + period-over-period deltas |
+| `GET` | `/admin/analytics/timeseries` | JWT | Sales over time, zero-filled for charting |
+| `GET` | `/admin/analytics/top-products` | JWT | Best sellers by units or revenue |
+| `GET` | `/admin/newsletter/subscribers` | JWT | Paginated subscriber list |
+| `GET` | `/admin/newsletter/stats` | JWT | List totals + 30-day growth |
+| `GET` | `/admin/newsletter/export` | JWT | CSV download (`text/csv`, not JSON) |
+| `PUT` | `/admin/newsletter/subscribers/:id` | JWT | Update name / status / tags |
+| `DELETE` | `/admin/newsletter/subscribers/:id` | JWT | Hard delete (GDPR erasure) |
+| `GET` | `/admin/settings` | JWT | All storefront settings |
+| `GET` | `/admin/settings/header-video` | JWT | Landing-page header video |
+| `PUT` | `/admin/settings/header-video` | JWT | Set desktop / mobile / poster URLs |
+| `DELETE` | `/admin/settings/header-video` | JWT | Clear all three URLs |
+
+---
+
+## Dashboard analytics & newsletter
+
+The analytics and newsletter endpoints are documented in full — with response
+shapes, date-range parameters, and frontend examples — in
+**[DASHBOARD_API.md](./DASHBOARD_API.md)**.
+
+Two things to know here:
+
+- **`GET /admin/orders` now returns pagination totals** alongside `data`, and
+  accepts `search`, `sort`, `direction`, and date-range filtering. `data` is
+  still a bare array of orders, so nothing existing breaks.
+
+  ```jsonc
+  {
+    "ok": true,
+    "data": [ /* Order[] */ ],
+    "pagination": { "total": 137, "limit": 50, "offset": 0, "has_more": true }
+  }
+  ```
+
+- **Only `paid` and `fulfilled` orders count toward revenue** in every analytics
+  figure. `pending` (abandoned checkout) and `cancelled` orders are excluded from
+  sales totals but still appear in the status counts.
+
+These endpoints require migration `0005` — run `npm run db:migrate` before use.
+
+---
+
+## Storefront settings — header video
+
+Stores the looping video shown in the landing-page header. Desktop and mobile are
+separate URLs because they are usually different crops; when the same file is used
+everywhere, set `desktop_url` and leave `mobile_url` null.
+
+```
+PUT /admin/settings/header-video
+```
+
+Partial update — omit a field to leave it unchanged, send `null` to clear it:
+
+```jsonc
+{ "desktop_url": "https://cdn.example.com/hero-desktop.mp4",
+  "mobile_url":  null,                                        // = same as desktop
+  "poster_url":  "https://cdn.example.com/hero.jpg" }
+```
+
+Returns the full object. URLs must use `http` or `https` — other schemes (notably
+`javascript:`) are rejected with `422`, because these values are rendered into a
+`src` attribute.
+
+`DELETE /admin/settings/header-video` clears all three at once. The public
+storefront reads the same data from `GET /settings`, cached for 60 seconds.
+
+This endpoint stores **links** — it does not host files. `POST /admin/images/upload`
+accepts images only (`jpeg`/`png`/`webp`/`gif`) and will reject an MP4, so host the
+video on Cloudflare Stream, Mux, or a public R2 bucket and paste the URL here.
+
+Requires migration `0006`.

@@ -4,7 +4,13 @@ import { z } from "zod";
 import type { Bindings } from "../types.js";
 import { getDatabase } from "../db/index.js";
 import { ok, err } from "../types.js";
-import type { OrderStatus, FulfillmentStatus } from "../types.js";
+import type {
+  OrderStatus,
+  FulfillmentStatus,
+  OrderSortField,
+  SortDirection,
+} from "../types.js";
+import { resolveRange, parseTzOffset } from "../lib/dateRange.js";
 
 const orders = new Hono<{ Bindings: Bindings }>();
 
@@ -35,19 +41,33 @@ const updateOrderSchema = z.object({
 
 // ─── GET /admin/orders ────────────────────────────────────────────────────────
 /**
- * List all orders, newest first.
+ * List orders, newest first, with the total count for pagination.
  *
  * Query params:
- *   limit           integer  default 50, max 100
- *   offset          integer  default 0
- *   status          "pending" | "paid" | "fulfilled" | "cancelled"
+ *   limit               integer  default 50, max 100
+ *   offset              integer  default 0
+ *   status              "pending" | "paid" | "fulfilled" | "cancelled"
  *   fulfillment_status  "unfulfilled" | "processing" | "shipped" | "delivered"
+ *   search              substring match on customer email/name, order ID, tracking number
+ *   sort                "created_at" (default) | "amount_total"
+ *   direction           "desc" (default) | "asc"
+ *   range               today | yesterday | 7d | 30d | 90d | 12m | mtd | last_month | ytd | all
+ *   start, end          ISO date or timestamp — overrides `range`
+ *   tz_offset_minutes   timezone for the range presets, e.g. -420
+ *
+ * Response:
+ *   { ok: true, data: Order[], pagination: { total, limit, offset, has_more } }
+ *
+ * `data` is still a bare array, so existing callers keep working — the counts
+ * live alongside it in `pagination`.
  */
 orders.get("/", async (c) => {
   const limitRaw = parseInt(c.req.query("limit") ?? "50", 10);
   const offsetRaw = parseInt(c.req.query("offset") ?? "0", 10);
   const statusRaw = c.req.query("status");
   const fulfillmentRaw = c.req.query("fulfillment_status");
+  const sortRaw = c.req.query("sort");
+  const directionRaw = c.req.query("direction");
 
   const limit = Math.min(Math.max(1, isNaN(limitRaw) ? 50 : limitRaw), 100);
   const offset = Math.max(0, isNaN(offsetRaw) ? 0 : offsetRaw);
@@ -62,10 +82,41 @@ orders.get("/", async (c) => {
     ? (fulfillmentRaw as FulfillmentStatus)
     : undefined;
 
+  const sort: OrderSortField = sortRaw === "amount_total" ? "amount_total" : "created_at";
+  const direction: SortDirection = directionRaw === "asc" ? "asc" : "desc";
+
+  // Date filtering is opt-in: with no range/start/end params, list everything.
+  const wantsDateFilter = Boolean(
+    c.req.query("range") || c.req.query("start") || c.req.query("end")
+  );
+  const dateFilter = wantsDateFilter
+    ? resolveRange({
+        range: c.req.query("range"),
+        start: c.req.query("start"),
+        end: c.req.query("end"),
+        tzOffsetMinutes: parseTzOffset(c.req.query("tz_offset_minutes")),
+      }).range
+    : undefined;
+
+  const filters = {
+    status,
+    fulfillment_status,
+    search: c.req.query("search")?.trim() || undefined,
+    start_date: dateFilter?.start,
+    end_date: dateFilter?.end,
+  };
+
   try {
     const db = getDatabase(c.env);
-    const result = await db.getOrders({ limit, offset, status, fulfillment_status });
-    return c.json(ok(result));
+    const [result, total] = await Promise.all([
+      db.getOrders({ ...filters, limit, offset, sort, direction }),
+      db.countOrders(filters),
+    ]);
+
+    return c.json({
+      ...ok(result),
+      pagination: { total, limit, offset, has_more: offset + result.length < total },
+    });
   } catch (e) {
     console.error("GET /admin/orders error:", e);
     return c.json(err("Failed to fetch orders"), 500);

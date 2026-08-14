@@ -18,7 +18,22 @@ import type {
   DiscountQueryOptions,
   DiscountType,
   DiscountAppliesTo,
+  DateRange,
+  SalesMetrics,
+  TimeseriesInterval,
+  TimeseriesPoint,
+  TopProduct,
+  TopProductSort,
+  OrderStatusCounts,
+  NewsletterSubscriber,
+  CreateSubscriberInput,
+  UpdateSubscriberInput,
+  SubscriberQueryOptions,
+  SubscriberStats,
 } from "../types.js";
+
+/** Order statuses that count toward revenue. Pending/cancelled never do. */
+const REVENUE_STATUSES = ["paid", "fulfilled"];
 
 // Lazy-import mongodb to avoid bundling issues when using D1.
 // The `mongodb` package works in Cloudflare Workers with `nodejs_compat_v2`.
@@ -37,6 +52,15 @@ type MongoOrderDoc = Omit<Order, "id" | "items"> & {
 };
 
 type MongoDiscountDoc = Omit<Discount, "id"> & { _id: string };
+
+type MongoSubscriberDoc = Omit<NewsletterSubscriber, "id"> & { _id: string };
+
+type SubscriberCollectionType = import("mongodb").Collection<MongoSubscriberDoc>;
+
+/** Key/value storefront settings — `_id` is the setting key. */
+type MongoSettingDoc = { _id: string; value: unknown; updated_at: string };
+
+type SettingCollectionType = import("mongodb").Collection<MongoSettingDoc>;
 
 let _client: MongoClientType | null = null;
 
@@ -76,6 +100,18 @@ export class MongoDatabase implements Database {
   private async discountCol(): Promise<DiscountCollectionType> {
     const client = await getClient(this.uri);
     return client.db(this.dbName).collection<MongoDiscountDoc>("discounts");
+  }
+
+  private async settingCol(): Promise<SettingCollectionType> {
+    const client = await getClient(this.uri);
+    return client.db(this.dbName).collection<MongoSettingDoc>("settings");
+  }
+
+  private async subscriberCol(): Promise<SubscriberCollectionType> {
+    const client = await getClient(this.uri);
+    return client
+      .db(this.dbName)
+      .collection<MongoSubscriberDoc>("newsletter_subscribers");
   }
 
   // ── Products ────────────────────────────────────────────────────────────────
@@ -286,18 +322,50 @@ export class MongoDatabase implements Database {
     return docToOrder(doc, itemDocs.map(docToOrderItem));
   }
 
+  /**
+   * Shared filter for order listing and counting, so the two can't drift apart.
+   */
+  private buildOrderFilter(options: OrderQueryOptions): Record<string, unknown> {
+    const filter: Record<string, unknown> = {};
+
+    if (options.status) filter.status = options.status;
+    if (options.fulfillment_status) filter.fulfillment_status = options.fulfillment_status;
+
+    if (options.start_date || options.end_date) {
+      const createdAt: Record<string, string> = {};
+      if (options.start_date) createdAt.$gte = options.start_date;
+      if (options.end_date) createdAt.$lt = options.end_date;
+      filter.created_at = createdAt;
+    }
+
+    if (options.search) {
+      // Escape regex metacharacters — the search term is raw user input.
+      const escaped = options.search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const pattern = { $regex: escaped, $options: "i" };
+      filter.$or = [
+        { customer_email: pattern },
+        { customer_name: pattern },
+        { shipping_name: pattern },
+        { _id: pattern },
+        { tracking_number: pattern },
+      ];
+    }
+
+    return filter;
+  }
+
   async getOrders(options: OrderQueryOptions = {}): Promise<Order[]> {
-    const { limit = 50, offset = 0, status, fulfillment_status } = options;
+    const { limit = 50, offset = 0, sort = "created_at", direction = "desc" } = options;
     const orderCol = await this.orderCol();
     const itemCol = await this.orderItemCol();
 
-    const filter: Record<string, unknown> = {};
-    if (status) filter.status = status;
-    if (fulfillment_status) filter.fulfillment_status = fulfillment_status;
+    const filter = this.buildOrderFilter(options);
+    const sortField = sort === "amount_total" ? "amount_total" : "created_at";
+    const sortOrder = direction === "asc" ? 1 : -1;
 
     const docs = await orderCol
       .find(filter)
-      .sort({ created_at: -1 })
+      .sort({ [sortField]: sortOrder })
       .skip(offset)
       .limit(limit)
       .toArray();
@@ -315,6 +383,11 @@ export class MongoDatabase implements Database {
     }
 
     return docs.map((doc) => docToOrder(doc, itemsByOrder.get(doc._id) ?? []));
+  }
+
+  async countOrders(options: OrderQueryOptions = {}): Promise<number> {
+    const orderCol = await this.orderCol();
+    return orderCol.countDocuments(this.buildOrderFilter(options));
   }
 
   async updateOrder(id: string, input: UpdateOrderInput): Promise<Order | null> {
@@ -470,6 +543,423 @@ export class MongoDatabase implements Database {
       { $inc: { usage_count: 1 }, $set: { updated_at: new Date().toISOString() } }
     );
   }
+
+  // ── Analytics ────────────────────────────────────────────────────────────────
+
+  /** Matches revenue-counting orders inside a window. */
+  private revenueMatch(range: DateRange): Record<string, unknown> {
+    return {
+      status: { $in: REVENUE_STATUSES },
+      created_at: { $gte: range.start, $lt: range.end },
+    };
+  }
+
+  async getSalesMetrics(range: DateRange): Promise<SalesMetrics> {
+    const orderCol = await this.orderCol();
+
+    // One pass over the matched orders: money from the order docs, units from
+    // the joined line items. $facet keeps it to a single round trip.
+    const [facet] = await orderCol
+      .aggregate<{
+        totals: Array<{
+          orders: number;
+          total_sales: number;
+          discounts: number;
+          emails: Array<string | null>;
+        }>;
+        units: Array<{ units_sold: number }>;
+      }>([
+        { $match: this.revenueMatch(range) },
+        {
+          $facet: {
+            totals: [
+              {
+                $group: {
+                  _id: null,
+                  orders: { $sum: 1 },
+                  total_sales: { $sum: "$amount_total" },
+                  discounts: { $sum: { $ifNull: ["$discount_amount", 0] } },
+                  emails: { $addToSet: "$customer_email" },
+                },
+              },
+            ],
+            units: [
+              {
+                $lookup: {
+                  from: "order_items",
+                  localField: "_id",
+                  foreignField: "order_id",
+                  as: "items",
+                },
+              },
+              {
+                $group: {
+                  _id: null,
+                  units_sold: { $sum: { $sum: "$items.quantity" } },
+                },
+              },
+            ],
+          },
+        },
+      ])
+      .toArray();
+
+    const totals = facet?.totals?.[0];
+    const orders = totals?.orders ?? 0;
+    const total_sales = totals?.total_sales ?? 0;
+    const discounts = totals?.discounts ?? 0;
+
+    // Customers who placed their first-ever paid order inside this window.
+    const newCustomerResult = await orderCol
+      .aggregate<{ count: number }>([
+        { $match: { status: { $in: REVENUE_STATUSES }, customer_email: { $ne: null } } },
+        { $group: { _id: "$customer_email", first_order: { $min: "$created_at" } } },
+        { $match: { first_order: { $gte: range.start, $lt: range.end } } },
+        { $count: "count" },
+      ])
+      .toArray();
+
+    return {
+      total_sales,
+      gross_sales: total_sales + discounts,
+      discounts,
+      orders,
+      units_sold: facet?.units?.[0]?.units_sold ?? 0,
+      average_order_value: orders > 0 ? Math.round(total_sales / orders) : 0,
+      customers: (totals?.emails ?? []).filter((e) => e !== null && e !== undefined).length,
+      new_customers: newCustomerResult[0]?.count ?? 0,
+    };
+  }
+
+  async getSalesTimeseries(
+    range: DateRange,
+    interval: TimeseriesInterval,
+    tzOffsetMinutes: number
+  ): Promise<TimeseriesPoint[]> {
+    const orderCol = await this.orderCol();
+    const timezone = offsetToTimezone(tzOffsetMinutes);
+    const date = { $dateFromString: { dateString: "$created_at" } };
+
+    // Bucket keys must match the D1 adapter's output exactly — the route layer
+    // zero-fills against keys it generates independently.
+    let bucket: Record<string, unknown>;
+    switch (interval) {
+      case "hour":
+        bucket = { $dateToString: { date, format: "%Y-%m-%dT%H:00", timezone } };
+        break;
+      case "week":
+        bucket = {
+          $dateToString: {
+            date: { $dateTrunc: { date, unit: "week", startOfWeek: "monday", timezone } },
+            format: "%Y-%m-%d",
+            timezone,
+          },
+        };
+        break;
+      case "month":
+        bucket = { $dateToString: { date, format: "%Y-%m", timezone } };
+        break;
+      case "day":
+      default:
+        bucket = { $dateToString: { date, format: "%Y-%m-%d", timezone } };
+    }
+
+    const rows = await orderCol
+      .aggregate<{ _id: string; orders: number; total_sales: number; units_sold: number }>([
+        { $match: this.revenueMatch(range) },
+        {
+          $lookup: {
+            from: "order_items",
+            localField: "_id",
+            foreignField: "order_id",
+            as: "items",
+          },
+        },
+        { $addFields: { bucket } },
+        {
+          $group: {
+            _id: "$bucket",
+            orders: { $sum: 1 },
+            total_sales: { $sum: "$amount_total" },
+            units_sold: { $sum: { $sum: "$items.quantity" } },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ])
+      .toArray();
+
+    return rows.map((row) => ({
+      bucket: row._id,
+      total_sales: row.total_sales,
+      orders: row.orders,
+      units_sold: row.units_sold,
+    }));
+  }
+
+  async getTopProducts(
+    range: DateRange,
+    limit: number,
+    sort: TopProductSort
+  ): Promise<TopProduct[]> {
+    const orderCol = await this.orderCol();
+    const sortField = sort === "revenue" ? "total_revenue" : "units_sold";
+
+    const rows = await orderCol
+      .aggregate<{
+        _id: string;
+        product_name: string;
+        units_sold: number;
+        total_revenue: number;
+        orders: number;
+      }>([
+        { $match: this.revenueMatch(range) },
+        {
+          $lookup: {
+            from: "order_items",
+            localField: "_id",
+            foreignField: "order_id",
+            as: "items",
+          },
+        },
+        { $unwind: "$items" },
+        {
+          $group: {
+            _id: "$items.product_id",
+            product_name: { $last: "$items.product_name" },
+            units_sold: { $sum: "$items.quantity" },
+            total_revenue: { $sum: { $multiply: ["$items.price", "$items.quantity"] } },
+            order_ids: { $addToSet: "$_id" },
+          },
+        },
+        {
+          $project: {
+            product_name: 1,
+            units_sold: 1,
+            total_revenue: 1,
+            orders: { $size: "$order_ids" },
+          },
+        },
+        { $sort: { [sortField]: -1 } },
+        { $limit: limit },
+      ])
+      .toArray();
+
+    return rows.map((row) => ({
+      product_id: row._id,
+      product_name: row.product_name,
+      units_sold: row.units_sold,
+      total_revenue: row.total_revenue,
+      orders: row.orders,
+    }));
+  }
+
+  async getOrderStatusCounts(range?: DateRange): Promise<OrderStatusCounts> {
+    const orderCol = await this.orderCol();
+    const rangeMatch = range
+      ? { created_at: { $gte: range.start, $lt: range.end } }
+      : {};
+
+    const [facet] = await orderCol
+      .aggregate<{
+        byStatus: Array<{ _id: string; count: number }>;
+        byFulfillment: Array<{ _id: string; count: number }>;
+      }>([
+        { $match: rangeMatch },
+        {
+          $facet: {
+            byStatus: [{ $group: { _id: "$status", count: { $sum: 1 } } }],
+            // Fulfillment counts only make sense for orders that were paid —
+            // an abandoned checkout is not an order waiting to be shipped.
+            byFulfillment: [
+              { $match: { status: { $in: REVENUE_STATUSES } } },
+              { $group: { _id: "$fulfillment_status", count: { $sum: 1 } } },
+            ],
+          },
+        },
+      ])
+      .toArray();
+
+    const counts: OrderStatusCounts = {
+      pending: 0,
+      paid: 0,
+      fulfilled: 0,
+      cancelled: 0,
+      unfulfilled: 0,
+      processing: 0,
+      shipped: 0,
+      delivered: 0,
+    };
+
+    for (const row of [...(facet?.byStatus ?? []), ...(facet?.byFulfillment ?? [])]) {
+      if (row._id in counts) {
+        counts[row._id as keyof OrderStatusCounts] = row.count;
+      }
+    }
+
+    return counts;
+  }
+
+  // ── Settings ─────────────────────────────────────────────────────────────────
+
+  async getSetting<T>(key: string): Promise<T | null> {
+    const col = await this.settingCol();
+    const doc = await col.findOne({ _id: key });
+    return doc ? (doc.value as T) : null;
+  }
+
+  async setSetting<T>(key: string, value: T): Promise<T> {
+    const col = await this.settingCol();
+    await col.updateOne(
+      { _id: key },
+      { $set: { value, updated_at: new Date().toISOString() } },
+      { upsert: true }
+    );
+    return value;
+  }
+
+  // ── Newsletter ───────────────────────────────────────────────────────────────
+
+  async createSubscriber(input: CreateSubscriberInput): Promise<NewsletterSubscriber> {
+    const col = await this.subscriberCol();
+    const now = new Date().toISOString();
+
+    const doc: MongoSubscriberDoc = {
+      _id: randomUUID(),
+      email: input.email.trim().toLowerCase(),
+      name: input.name ?? null,
+      status: "subscribed",
+      source: input.source ?? "website",
+      tags: input.tags ?? [],
+      metadata: input.metadata ?? {},
+      country: input.country ?? null,
+      unsubscribe_token: randomUUID().replace(/-/g, ""),
+      subscribed_at: now,
+      unsubscribed_at: null,
+      created_at: now,
+      updated_at: now,
+    };
+
+    await col.insertOne(doc);
+    return docToSubscriber(doc);
+  }
+
+  async getSubscriber(id: string): Promise<NewsletterSubscriber | null> {
+    const col = await this.subscriberCol();
+    const doc = await col.findOne({ _id: id });
+    return doc ? docToSubscriber(doc) : null;
+  }
+
+  async getSubscriberByEmail(email: string): Promise<NewsletterSubscriber | null> {
+    const col = await this.subscriberCol();
+    const doc = await col.findOne({ email: email.trim().toLowerCase() });
+    return doc ? docToSubscriber(doc) : null;
+  }
+
+  async getSubscriberByToken(token: string): Promise<NewsletterSubscriber | null> {
+    const col = await this.subscriberCol();
+    const doc = await col.findOne({ unsubscribe_token: token });
+    return doc ? docToSubscriber(doc) : null;
+  }
+
+  private buildSubscriberFilter(options: SubscriberQueryOptions): Record<string, unknown> {
+    const filter: Record<string, unknown> = {};
+    if (options.status) filter.status = options.status;
+    if (options.source) filter.source = options.source;
+    if (options.search) {
+      const escaped = options.search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const pattern = { $regex: escaped, $options: "i" };
+      filter.$or = [{ email: pattern }, { name: pattern }];
+    }
+    return filter;
+  }
+
+  async getSubscribers(options: SubscriberQueryOptions = {}): Promise<NewsletterSubscriber[]> {
+    const { limit = 50, offset = 0 } = options;
+    const col = await this.subscriberCol();
+
+    const docs = await col
+      .find(this.buildSubscriberFilter(options))
+      .sort({ created_at: -1 })
+      .skip(offset)
+      .limit(limit)
+      .toArray();
+
+    return docs.map(docToSubscriber);
+  }
+
+  async countSubscribers(options: SubscriberQueryOptions = {}): Promise<number> {
+    const col = await this.subscriberCol();
+    return col.countDocuments(this.buildSubscriberFilter(options));
+  }
+
+  async updateSubscriber(
+    id: string,
+    input: UpdateSubscriberInput
+  ): Promise<NewsletterSubscriber | null> {
+    const col = await this.subscriberCol();
+    const existing = await col.findOne({ _id: id });
+    if (!existing) return null;
+
+    const now = new Date().toISOString();
+    const status = input.status ?? existing.status;
+
+    // Stamp the opt-out moment on the transition, and clear it on re-subscribe.
+    const statusFields: Partial<MongoSubscriberDoc> = {};
+    if (status !== existing.status) {
+      statusFields.status = status;
+      if (status === "unsubscribed") {
+        statusFields.unsubscribed_at = now;
+      } else {
+        statusFields.unsubscribed_at = null;
+        statusFields.subscribed_at = now;
+      }
+    }
+
+    const result = await col.findOneAndUpdate(
+      { _id: id },
+      {
+        $set: {
+          ...(input.name !== undefined && { name: input.name }),
+          ...(input.tags !== undefined && { tags: input.tags }),
+          ...(input.metadata !== undefined && { metadata: input.metadata }),
+          ...statusFields,
+          updated_at: now,
+        },
+      },
+      { returnDocument: "after" }
+    );
+
+    return result ? docToSubscriber(result) : null;
+  }
+
+  async deleteSubscriber(id: string): Promise<boolean> {
+    const col = await this.subscriberCol();
+    const result = await col.deleteOne({ _id: id });
+    return result.deletedCount > 0;
+  }
+
+  async getSubscriberStats(): Promise<SubscriberStats> {
+    const col = await this.subscriberCol();
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    const [total, subscribed, unsubscribed, newLast30d] = await Promise.all([
+      col.countDocuments({}),
+      col.countDocuments({ status: "subscribed" }),
+      col.countDocuments({ status: "unsubscribed" }),
+      col.countDocuments({ created_at: { $gte: thirtyDaysAgo } }),
+    ]);
+
+    return { total, subscribed, unsubscribed, new_last_30d: newLast30d };
+  }
+}
+
+/** Converts a UTC offset in minutes to the "+HH:MM" form Mongo expects. */
+function offsetToTimezone(minutes: number): string {
+  const sign = minutes < 0 ? "-" : "+";
+  const abs = Math.abs(minutes);
+  const hh = String(Math.floor(abs / 60)).padStart(2, "0");
+  const mm = String(abs % 60).padStart(2, "0");
+  return `${sign}${hh}:${mm}`;
 }
 
 // ─── Conversion helpers ───────────────────────────────────────────────────────
@@ -490,6 +980,11 @@ function docToOrder(doc: MongoOrderDoc, items: OrderItem[]): Order {
 }
 
 function docToDiscount(doc: MongoDiscountDoc): Discount {
+  const { _id, ...rest } = doc;
+  return { id: _id, ...rest };
+}
+
+function docToSubscriber(doc: MongoSubscriberDoc): NewsletterSubscriber {
   const { _id, ...rest } = doc;
   return { id: _id, ...rest };
 }
